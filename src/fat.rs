@@ -569,7 +569,7 @@ impl FatVolume {
     /// Look in the FAT to see which cluster comes next.
     pub(crate) fn next_cluster<D, T>(
         &self,
-        controller: &Controller<D, T>,
+        controller: &mut Controller<D, T>,
         cluster: Cluster,
     ) -> Result<Cluster, Error<D::Error>>
     where
@@ -813,7 +813,7 @@ impl FatVolume {
     /// Useful for performing directory listings.
     pub(crate) fn iterate_dir<D, T, F>(
         &self,
-        controller: &Controller<D, T>,
+        controller: &mut Controller<D, T>,
         dir: &Directory,
         mut func: F,
     ) -> Result<(), Error<D::Error>>
