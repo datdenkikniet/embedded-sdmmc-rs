@@ -101,7 +101,7 @@ pub use crate::filesystem::{
     Timestamp, MAX_FILE_SIZE,
 };
 pub use crate::sdmmc::Error as SdMmcError;
-pub use crate::sdmmc::{BlockSpi, SdMmcSpi};
+pub use crate::sdmmc::SdMmcSpi;
 
 // ****************************************************************************
 //
@@ -1132,7 +1132,11 @@ mod tests {
         }
 
         /// Write one or more blocks, starting at the given block index.
-        fn write(&mut self, _blocks: &[Block], _start_block_idx: BlockIdx) -> Result<(), Self::Error> {
+        fn write(
+            &mut self,
+            _blocks: &[Block],
+            _start_block_idx: BlockIdx,
+        ) -> Result<(), Self::Error> {
             unimplemented!();
         }
 
