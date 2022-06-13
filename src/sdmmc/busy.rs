@@ -4,8 +4,13 @@ use crate::sdmmc_proto::*;
 
 use super::{Delay, Error};
 
+/// A struct used to ensure that communication only occurs
+/// when CS is low.
+///
+/// This struct is responsible for ensuring that all SPI, CRC, and
+/// other communication-layer functionalities are performed correctly.
 #[cfg_attr(feature = "defmt-log", derive(defmt::Format))]
-pub struct SdMmcSpiComms<'spi, 'cs, SPI, CS>
+pub struct SdMmcSpiBusy<'spi, 'cs, SPI, CS>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
@@ -14,7 +19,7 @@ where
     cs: &'cs mut CS,
 }
 
-impl<'spi, 'cs, SPI, CS> Drop for SdMmcSpiComms<'spi, 'cs, SPI, CS>
+impl<'spi, 'cs, SPI, CS> Drop for SdMmcSpiBusy<'spi, 'cs, SPI, CS>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
@@ -24,7 +29,7 @@ where
     }
 }
 
-impl<'spi, 'cs, SPI, CS> SdMmcSpiComms<'spi, 'cs, SPI, CS>
+impl<'spi, 'cs, SPI, CS> SdMmcSpiBusy<'spi, 'cs, SPI, CS>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,

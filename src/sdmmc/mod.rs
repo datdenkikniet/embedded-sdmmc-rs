@@ -6,7 +6,7 @@
 //! performance.
 
 mod busy;
-use busy::SdMmcSpiComms;
+use busy::SdMmcSpiBusy;
 
 use core::fmt::Debug;
 
@@ -169,15 +169,16 @@ where
     ) -> Result<SdMmcSpi<Idle<SPI, CS>>, (Error, Self)> {
         debug!("acquiring card with opts: {:?}", options);
         let f = |s: &mut Self| {
-            // Assume it hasn't worked
             trace!("Reset card..");
+
             // Supply minimum of 74 clock cycles without CS asserted.
             s.state.cs.set_high().map_err(|_| Error::GpioError)?;
             for _ in 0..10 {
                 s.discard_byte()?;
             }
 
-            let mut busy = SdMmcSpiComms::new(&mut s.state.spi, &mut s.state.cs)?;
+            let mut busy = SdMmcSpiBusy::new(&mut s.state.spi, &mut s.state.cs)?;
+
             // Enter SPI mode
             let mut delay = Delay::new();
             let mut attempts = 32;
@@ -290,13 +291,15 @@ where
         }
     }
 
+    /// Run a command with chip select asserted.
+    ///
+    /// Chip select is always deasserted, even if an error occured in `f`
     fn with_chip_select<F, R>(&mut self, f: F) -> Result<R, Error>
     where
-        F: FnOnce(&mut SdMmcSpiComms<'_, '_, SPI, CS>) -> Result<R, Error>,
+        F: FnOnce(&mut SdMmcSpiBusy<SPI, CS>) -> Result<R, Error>,
     {
-        let mut busy = SdMmcSpiComms::new(&mut self.state.spi, &mut self.state.cs)?;
+        let mut busy = SdMmcSpiBusy::new(&mut self.state.spi, &mut self.state.cs)?;
         let result = f(&mut busy);
-        drop(busy);
         result
     }
 
