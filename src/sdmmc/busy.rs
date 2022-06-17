@@ -1,6 +1,9 @@
-use embedded_hal::{blocking::spi::Transfer, digital::v2::OutputPin};
+use embedded_hal::{
+    blocking::{delay::DelayUs, spi::Transfer},
+    digital::v2::OutputPin,
+};
 
-use super::{proto::*, Delay, Error};
+use super::{proto::*, Error};
 
 /// A struct used to ensure that communication only occurs
 /// when CS is low.
@@ -8,32 +11,40 @@ use super::{proto::*, Delay, Error};
 /// This struct is responsible for ensuring that all SPI, CRC, and
 /// other communication-layer functionalities are performed correctly.
 #[cfg_attr(feature = "defmt-log", derive(defmt::Format))]
-pub struct SdMmcSpiBusy<'spi, 'cs, SPI, CS>
+pub struct SdMmcSpiBusy<'spi, 'cs, 'delay, SPI, CS, DELAY>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
+    DELAY: DelayUs<u16>,
 {
     spi: &'spi mut SPI,
     cs: &'cs mut CS,
+    delay: &'delay mut DELAY,
 }
 
-impl<'spi, 'cs, SPI, CS> Drop for SdMmcSpiBusy<'spi, 'cs, SPI, CS>
+impl<'spi, 'cs, 'delay, SPI, CS, DELAY> Drop for SdMmcSpiBusy<'spi, 'cs, 'delay, SPI, CS, DELAY>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
+    DELAY: DelayUs<u16>,
 {
     fn drop(&mut self) {
         self.cs_high().ok();
     }
 }
 
-impl<'spi, 'cs, SPI, CS> SdMmcSpiBusy<'spi, 'cs, SPI, CS>
+impl<'spi, 'cs, 'delay, SPI, CS, DELAY> SdMmcSpiBusy<'spi, 'cs, 'delay, SPI, CS, DELAY>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
+    DELAY: DelayUs<u16>,
 {
-    pub fn new(spi: &'spi mut SPI, cs: &'cs mut CS) -> Result<Self, Error> {
-        let mut me = Self { spi, cs };
+    pub fn new(
+        spi: &'spi mut SPI,
+        cs: &'cs mut CS,
+        delay: &'delay mut DELAY,
+    ) -> Result<Self, Error> {
+        let mut me = Self { spi, cs, delay };
         me.cs_low()?;
         Ok(me)
     }
@@ -68,13 +79,16 @@ where
     /// Spin until the card returns 0xFF, or we spin too many times and
     /// timeout.
     pub fn wait_not_busy(&mut self) -> Result<(), Error> {
-        let mut delay = Delay::new();
+        let mut attempts = 0;
         loop {
+            attempts += 1;
             let s = self.receive()?;
             if s == 0xFF {
                 break;
+            } else if attempts >= 32 {
+                return Err(Error::TimeoutWaitNotBusy);
             }
-            delay.delay(Error::TimeoutWaitNotBusy)?;
+            self.delay.delay_us(5);
         }
         Ok(())
     }
@@ -121,13 +135,16 @@ where
     /// given buffer, so make sure it's the right size.
     pub fn read_data(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
         // Get first non-FF byte.
-        let mut delay = Delay::new();
+        let mut status_attempts = 0;
         let status = loop {
+            status_attempts += 1;
             let s = self.receive()?;
             if s != 0xFF {
                 break s;
+            } else if status_attempts > 32 {
+                return Err(Error::TimeoutReadBuffer);
             }
-            delay.delay(Error::TimeoutReadBuffer)?;
+            self.delay.delay_us(5);
         };
         if status != DATA_START_BLOCK {
             return Err(Error::ReadError);

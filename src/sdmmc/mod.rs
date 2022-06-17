@@ -11,32 +11,30 @@ use busy::SdMmcSpiBusy;
 pub mod proto;
 use proto::*;
 
-use core::fmt::Debug;
-
 use super::{Block, BlockCount, BlockDevice, BlockIdx};
 
-use embedded_hal::blocking::spi::Transfer;
 use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::{blocking::delay::DelayUs, blocking::spi::Transfer};
 #[cfg(feature = "log")]
 use log::{debug, trace, warn};
 
 #[cfg(feature = "defmt-log")]
 use defmt::{debug, trace, warn};
 
-const DEFAULT_DELAY_COUNT: u32 = 32_000;
-
 /// Represents an inactive SD Card interface.
 /// Built from an SPI peripheral and a Chip
 /// Select pin. We need Chip Select to be separate so we can clock out some
 /// bytes without Chip Select asserted (which puts the card into SPI mode).
-pub struct SdMmcSpi<SPI, CS, State>
+pub struct SdMmcSpi<SPI, CS, DELAY, State>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
+    DELAY: DelayUs<u16>,
 {
     card_type: CardType,
     spi: SPI,
     cs: CS,
+    delay: DELAY,
     _state: State,
 }
 
@@ -91,31 +89,6 @@ enum CardType {
     SDHC,
 }
 
-/// A terrible hack for busy-waiting the CPU while we wait for the card to
-/// sort itself out.
-///
-/// @TODO replace this!
-struct Delay(u32);
-
-impl Delay {
-    fn new() -> Delay {
-        Delay(DEFAULT_DELAY_COUNT)
-    }
-
-    fn delay(&mut self, err: Error) -> Result<(), Error> {
-        if self.0 == 0 {
-            Err(err)
-        } else {
-            let dummy_var: u32 = 0;
-            for _ in 0..100 {
-                unsafe { core::ptr::read_volatile(&dummy_var) };
-            }
-            self.0 -= 1;
-            Ok(())
-        }
-    }
-}
-
 /// Options for acquiring the card.
 #[cfg_attr(feature = "defmt-log", derive(defmt::Format))]
 #[derive(Debug)]
@@ -130,23 +103,25 @@ impl Default for AcquireOpts {
     }
 }
 
-impl<SPI, CS> SdMmcSpi<SPI, CS, NotInit>
+impl<SPI, CS, DELAY> SdMmcSpi<SPI, CS, DELAY, NotInit>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
+    DELAY: DelayUs<u16>,
 {
     /// Create a new SD/MMC controller using a raw SPI interface.
-    pub fn new(spi: SPI, cs: CS) -> Self {
+    pub fn new(spi: SPI, cs: CS, delay: DELAY) -> Self {
         SdMmcSpi {
             card_type: CardType::SD1,
             spi,
             cs,
+            delay,
             _state: NotInit {},
         }
     }
 
     /// Initializes the card into a known state
-    pub fn acquire(self) -> Result<SdMmcSpi<SPI, CS, Initialized>, (Error, Self)> {
+    pub fn acquire(self) -> Result<SdMmcSpi<SPI, CS, DELAY, Initialized>, (Error, Self)> {
         self.acquire_with_opts(Default::default())
     }
 
@@ -161,7 +136,7 @@ where
     pub fn acquire_with_opts(
         mut self,
         options: AcquireOpts,
-    ) -> Result<SdMmcSpi<SPI, CS, Initialized>, (Error, Self)> {
+    ) -> Result<SdMmcSpi<SPI, CS, DELAY, Initialized>, (Error, Self)> {
         debug!("acquiring card with opts: {:?}", options);
         let f = |s: &mut Self| {
             trace!("Reset card..");
@@ -172,18 +147,21 @@ where
                 s.discard_byte()?;
             }
 
-            let mut busy = SdMmcSpiBusy::new(&mut s.spi, &mut s.cs)?;
+            let mut busy = SdMmcSpiBusy::new(&mut s.spi, &mut s.cs, &mut s.delay)?;
 
             // Enter SPI mode
-            let mut delay = Delay::new();
-            let mut attempts = 32;
-            while attempts > 0 {
-                trace!("Enter SPI mode, attempt: {}..", 32i32 - attempts);
+            let mut enable_spi_mode_attempts = 0;
+            while enable_spi_mode_attempts > 0 {
+                if enable_spi_mode_attempts > 32 {
+                    return Err(Error::TimeoutCommand(CMD0));
+                }
+
+                trace!("Enter SPI mode, attempt: {}..", enable_spi_mode_attempts);
                 match busy.card_command(CMD0, 0) {
                     Err(Error::TimeoutCommand(0)) => {
                         // Try again?
                         warn!("Timed out, trying again..");
-                        attempts -= 1;
+                        enable_spi_mode_attempts -= 1;
                     }
                     Err(e) => {
                         return Err(e);
@@ -196,11 +174,6 @@ where
                         warn!("Got response: {:x}, trying again..", r);
                     }
                 }
-
-                delay.delay(Error::TimeoutCommand(CMD0))?;
-            }
-            if attempts == 0 {
-                return Err(Error::CardNotFound);
             }
             // Enable CRC
             debug!("Enable CRC: {}", options.require_crc);
@@ -208,8 +181,12 @@ where
                 return Err(Error::CantEnableCRC);
             }
             // Check card version
-            let mut delay = Delay::new();
+            let mut card_version_attempts = 0;
             loop {
+                card_version_attempts += 1;
+                if card_version_attempts > 32 {
+                    return Err(Error::TimeoutCommand(CMD8));
+                }
                 if busy.card_command(CMD8, 0x1AA)? == (R1_ILLEGAL_COMMAND | R1_IDLE_STATE) {
                     s.card_type = CardType::SD1;
                     break;
@@ -222,7 +199,6 @@ where
                     s.card_type = CardType::SD2;
                     break;
                 }
-                delay.delay(Error::TimeoutCommand(CMD8))?;
             }
             debug!("Card version: {:?}", s.card_type);
 
@@ -231,9 +207,14 @@ where
                 CardType::SD2 | CardType::SDHC => 0x4000_0000,
             };
 
-            let mut delay = Delay::new();
-            while busy.card_acmd(ACMD41, arg)? != R1_READY_STATE {
-                delay.delay(Error::TimeoutACommand(ACMD41))?;
+            let mut capacity_command_attempts = 0;
+            loop {
+                capacity_command_attempts += 1;
+                if busy.card_acmd(ACMD41, arg)? == R1_READY_STATE {
+                    break;
+                } else if capacity_command_attempts > 32 {
+                    return Err(Error::TimeoutACommand(ACMD41));
+                }
             }
 
             if s.card_type == CardType::SD2 {
@@ -258,6 +239,7 @@ where
                 card_type: self.card_type,
                 spi: self.spi,
                 cs: self.cs,
+                delay: self.delay,
                 _state: Initialized {},
             }),
             Err(e) => Err((e, self)),
@@ -265,20 +247,22 @@ where
     }
 }
 
-impl<SPI, CS> SdMmcSpi<SPI, CS, Initialized>
+impl<SPI, CS, DELAY> SdMmcSpi<SPI, CS, DELAY, Initialized>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
+    DELAY: DelayUs<u16>,
 {
     /// Mark the card as unused.
     /// This should be kept infallible, because Drop is unable to fail.
     /// See https://github.com/rust-lang/rfcs/issues/814
     // If there is any need to flush data, it should be implemented here.
-    pub fn deinit(self) -> SdMmcSpi<SPI, CS, NotInit> {
+    pub fn deinit(self) -> SdMmcSpi<SPI, CS, DELAY, NotInit> {
         SdMmcSpi {
             card_type: self.card_type,
             spi: self.spi,
             cs: self.cs,
+            delay: self.delay,
             _state: NotInit {},
         }
     }
@@ -288,9 +272,9 @@ where
     /// Chip select is always deasserted, even if an error occured in `f`
     fn with_chip_select<F, R>(&mut self, f: F) -> Result<R, Error>
     where
-        F: FnOnce(&mut SdMmcSpiBusy<SPI, CS>) -> Result<R, Error>,
+        F: FnOnce(&mut SdMmcSpiBusy<SPI, CS, DELAY>) -> Result<R, Error>,
     {
-        let mut busy = SdMmcSpiBusy::new(&mut self.spi, &mut self.cs)?;
+        let mut busy = SdMmcSpiBusy::new(&mut self.spi, &mut self.cs, &mut self.delay)?;
         let result = f(&mut busy);
         result
     }
@@ -342,10 +326,11 @@ where
     }
 }
 
-impl<SPI, CS> BlockDevice for SdMmcSpi<SPI, CS, Initialized>
+impl<SPI, CS, DELAY> BlockDevice for SdMmcSpi<SPI, CS, DELAY, Initialized>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
+    DELAY: DelayUs<u16>,
 {
     type Error = Error;
 
