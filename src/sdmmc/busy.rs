@@ -1,8 +1,6 @@
 use embedded_hal::{blocking::spi::Transfer, digital::v2::OutputPin};
 
-use crate::sdmmc_proto::*;
-
-use super::{Delay, Error};
+use super::{proto::*, Delay, Error};
 
 /// A struct used to ensure that communication only occurs
 /// when CS is low.

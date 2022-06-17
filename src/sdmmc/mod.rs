@@ -8,9 +8,11 @@
 mod busy;
 use busy::SdMmcSpiBusy;
 
+pub mod proto;
+use proto::*;
+
 use core::fmt::Debug;
 
-use super::sdmmc_proto::*;
 use super::{Block, BlockCount, BlockDevice, BlockIdx};
 
 use embedded_hal::blocking::spi::Transfer;
@@ -35,7 +37,7 @@ where
     card_type: CardType,
     spi: SPI,
     cs: CS,
-    state: State,
+    _state: State,
 }
 
 /// The possible errors `SdMmcSpi` can generate.
@@ -139,7 +141,7 @@ where
             card_type: CardType::SD1,
             spi,
             cs,
-            state: NotInit {},
+            _state: NotInit {},
         }
     }
 
@@ -256,7 +258,7 @@ where
                 card_type: self.card_type,
                 spi: self.spi,
                 cs: self.cs,
-                state: Initialized {},
+                _state: Initialized {},
             }),
             Err(e) => Err((e, self)),
         }
@@ -277,7 +279,7 @@ where
             card_type: self.card_type,
             spi: self.spi,
             cs: self.cs,
-            state: NotInit {},
+            _state: NotInit {},
         }
     }
 
