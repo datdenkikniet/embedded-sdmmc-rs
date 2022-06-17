@@ -27,8 +27,14 @@ const DEFAULT_DELAY_COUNT: u32 = 32_000;
 /// Built from an SPI peripheral and a Chip
 /// Select pin. We need Chip Select to be separate so we can clock out some
 /// bytes without Chip Select asserted (which puts the card into SPI mode).
-pub struct SdMmcSpi<State> {
+pub struct SdMmcSpi<SPI, CS, State>
+where
+    SPI: Transfer<u8>,
+    CS: OutputPin,
+{
     card_type: CardType,
+    spi: SPI,
+    cs: CS,
     state: State,
 }
 
@@ -68,25 +74,11 @@ pub enum Error {
 
 /// The state of an SdMmcSpi if it is not initialized
 #[cfg_attr(feature = "defmt-log", derive(defmt::Format))]
-pub struct NotInit<SPI, CS>
-where
-    SPI: Transfer<u8>,
-    CS: OutputPin,
-{
-    spi: SPI,
-    cs: CS,
-}
+pub struct NotInit;
 
-/// The state of an SdMmcSpi if it is Idle
+/// The state of an SdMmcSpi if it is initialized
 #[cfg_attr(feature = "defmt-log", derive(defmt::Format))]
-pub struct Idle<SPI, CS>
-where
-    SPI: Transfer<u8>,
-    CS: OutputPin,
-{
-    spi: SPI,
-    cs: CS,
-}
+pub struct Initialized;
 
 /// The different types of card we support.
 #[cfg_attr(feature = "defmt-log", derive(defmt::Format))]
@@ -136,7 +128,7 @@ impl Default for AcquireOpts {
     }
 }
 
-impl<SPI, CS> SdMmcSpi<NotInit<SPI, CS>>
+impl<SPI, CS> SdMmcSpi<SPI, CS, NotInit>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
@@ -145,18 +137,19 @@ where
     pub fn new(spi: SPI, cs: CS) -> Self {
         SdMmcSpi {
             card_type: CardType::SD1,
-            state: NotInit { spi, cs },
+            spi,
+            cs,
+            state: NotInit {},
         }
     }
 
     /// Initializes the card into a known state
-    pub fn acquire(self) -> Result<SdMmcSpi<Idle<SPI, CS>>, (Error, Self)> {
+    pub fn acquire(self) -> Result<SdMmcSpi<SPI, CS, Initialized>, (Error, Self)> {
         self.acquire_with_opts(Default::default())
     }
 
     fn discard_byte(&mut self) -> Result<u8, Error> {
-        self.state
-            .spi
+        self.spi
             .transfer(&mut [0xFF])
             .map(|b| b[0])
             .map_err(|_e| Error::Transport)
@@ -166,18 +159,18 @@ where
     pub fn acquire_with_opts(
         mut self,
         options: AcquireOpts,
-    ) -> Result<SdMmcSpi<Idle<SPI, CS>>, (Error, Self)> {
+    ) -> Result<SdMmcSpi<SPI, CS, Initialized>, (Error, Self)> {
         debug!("acquiring card with opts: {:?}", options);
         let f = |s: &mut Self| {
             trace!("Reset card..");
 
             // Supply minimum of 74 clock cycles without CS asserted.
-            s.state.cs.set_high().map_err(|_| Error::GpioError)?;
+            s.cs.set_high().map_err(|_| Error::GpioError)?;
             for _ in 0..10 {
                 s.discard_byte()?;
             }
 
-            let mut busy = SdMmcSpiBusy::new(&mut s.state.spi, &mut s.state.cs)?;
+            let mut busy = SdMmcSpiBusy::new(&mut s.spi, &mut s.cs)?;
 
             // Enter SPI mode
             let mut delay = Delay::new();
@@ -261,33 +254,30 @@ where
         match result {
             Ok(_) => Ok(SdMmcSpi {
                 card_type: self.card_type,
-                state: Idle {
-                    spi: self.state.spi,
-                    cs: self.state.cs,
-                },
+                spi: self.spi,
+                cs: self.cs,
+                state: Initialized {},
             }),
             Err(e) => Err((e, self)),
         }
     }
 }
 
-impl<SPI, CS> SdMmcSpi<Idle<SPI, CS>>
+impl<SPI, CS> SdMmcSpi<SPI, CS, Initialized>
 where
     SPI: Transfer<u8>,
     CS: OutputPin,
-    <SPI as Transfer<u8>>::Error: Debug,
 {
     /// Mark the card as unused.
     /// This should be kept infallible, because Drop is unable to fail.
     /// See https://github.com/rust-lang/rfcs/issues/814
     // If there is any need to flush data, it should be implemented here.
-    pub fn deinit(self) -> SdMmcSpi<NotInit<SPI, CS>> {
+    pub fn deinit(self) -> SdMmcSpi<SPI, CS, NotInit> {
         SdMmcSpi {
             card_type: self.card_type,
-            state: NotInit {
-                spi: self.state.spi,
-                cs: self.state.cs,
-            },
+            spi: self.spi,
+            cs: self.cs,
+            state: NotInit {},
         }
     }
 
@@ -298,7 +288,7 @@ where
     where
         F: FnOnce(&mut SdMmcSpiBusy<SPI, CS>) -> Result<R, Error>,
     {
-        let mut busy = SdMmcSpiBusy::new(&mut self.state.spi, &mut self.state.cs)?;
+        let mut busy = SdMmcSpiBusy::new(&mut self.spi, &mut self.cs)?;
         let result = f(&mut busy);
         result
     }
@@ -350,10 +340,9 @@ where
     }
 }
 
-impl<SPI, CS> BlockDevice for SdMmcSpi<Idle<SPI, CS>>
+impl<SPI, CS> BlockDevice for SdMmcSpi<SPI, CS, Initialized>
 where
     SPI: Transfer<u8>,
-    <SPI as Transfer<u8>>::Error: Debug,
     CS: OutputPin,
 {
     type Error = Error;
