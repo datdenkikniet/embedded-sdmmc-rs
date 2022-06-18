@@ -81,7 +81,7 @@ use defmt::debug;
 #[macro_use]
 mod structure;
 
-pub mod blockdevice;
+mod blockdevice;
 pub mod fat;
 pub mod mbr;
 pub mod sdmmc;

@@ -2,6 +2,9 @@
 //!
 //! Generic code for handling block devices.
 
+#[cfg(feature = "refcell-blockdevice")]
+mod refcell;
+
 /// Represents a standard 512 byte block (also known as a sector). IBM PC
 /// formatted 5.25" and 3.5" floppy disks, SD/MMC cards up to 1 GiB in size
 /// and IDE/SATA Hard Drives up to about 2 TiB all have 512 byte blocks.

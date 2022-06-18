@@ -342,16 +342,19 @@ where
     }
 }
 
-impl<BD> Mbr<BD>
+impl<'bd, BD> Mbr<BD>
 where
-    BD: BlockDevice + Clone,
+    &'bd BD: BlockDevice + 'bd,
 {
     /// Get representation for the partition with number `partition_num`, while passing
     /// this partition an immutable reference to the `BD` stored within this `Mbr`
-    pub fn get_partition_cloned(&self, partition_num: PartitionNumber) -> Option<Partition<BD>> {
+    pub fn get_partition_immut(
+        &'bd self,
+        partition_num: PartitionNumber,
+    ) -> Option<Partition<&'bd BD>> {
         let partition_info = self.get_partition_info(partition_num)?;
         Some(Partition {
-            block_device: self.block_dev.clone(),
+            block_device: &self.block_dev,
             info: partition_info,
         })
     }
