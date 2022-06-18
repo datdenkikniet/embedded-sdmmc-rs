@@ -83,6 +83,7 @@ mod structure;
 
 pub mod blockdevice;
 pub mod fat;
+pub mod mbr;
 pub mod sdmmc;
 
 pub use crate::blockdevice::{Block, BlockCount, BlockDevice, BlockIdx};

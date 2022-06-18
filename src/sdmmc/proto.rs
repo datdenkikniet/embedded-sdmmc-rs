@@ -118,6 +118,11 @@ impl CsdV1 {
         CsdV1::default()
     }
 
+    /// Access the data describing this Csd
+    pub fn data(&self) -> &[u8; 16] {
+        &self.data
+    }
+
     define_field!(csd_ver, u8, 0, 6, 2);
     define_field!(data_read_access_time1, u8, 1, 0, 8);
     define_field!(data_read_access_time2, u8, 2, 0, 8);
@@ -165,6 +170,11 @@ impl CsdV2 {
     /// Create a new, empty, CSD
     pub fn new() -> CsdV2 {
         CsdV2::default()
+    }
+
+    /// Access the data for this Csd
+    pub fn data(&self) -> &[u8; 16] {
+        &self.data
     }
 
     define_field!(csd_ver, u8, 0, 6, 2);

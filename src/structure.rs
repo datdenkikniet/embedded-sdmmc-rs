@@ -2,10 +2,10 @@
 
 macro_rules! access_field {
     ($self:expr, $offset:expr, $start_bit:expr, 1) => {
-        ($self.data[$offset] & (1 << $start_bit)) != 0
+        ($self.data()[$offset] & (1 << $start_bit)) != 0
     };
     ($self:expr, $offset:expr, $start:expr, $num_bits:expr) => {
-        ($self.data[$offset] >> $start) & (((1u16 << $num_bits) - 1) as u8)
+        ($self.data()[$offset] >> $start) & (((1u16 << $num_bits) - 1) as u8)
     };
 }
 
@@ -38,21 +38,23 @@ macro_rules! define_field {
     ($name:ident, u8, $offset:expr) => {
         /// Get the value from the $name field
         pub fn $name(&self) -> u8 {
-            self.data[$offset]
+            self.data()[$offset]
         }
     };
 
     ($name:ident, u16, $offset:expr) => {
         /// Get the value from the $name field
         pub fn $name(&self) -> u16 {
-            LittleEndian::read_u16(&self.data[$offset..$offset+2])
+            use core::convert::TryInto;
+            u16::from_le_bytes(self.data()[$offset..$offset + 2].try_into().expect("Infallible"))
         }
     };
 
     ($name:ident, u32, $offset:expr) => {
         /// Get the $name field
         pub fn $name(&self) -> u32 {
-            LittleEndian::read_u32(&self.data[$offset..$offset+4])
+            use core::convert::TryInto;
+            u32::from_le_bytes(self.data()[$offset..$offset + 4].try_into().expect("Infallible"))
         }
     };
 }

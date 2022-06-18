@@ -2,6 +2,8 @@
 //!
 //! Generic code for handling block devices.
 
+use core::ops::RangeInclusive;
+
 /// Represents a standard 512 byte block (also known as a sector). IBM PC
 /// formatted 5.25" and 3.5" floppy disks, SD/MMC cards up to 1 GiB in size
 /// and IDE/SATA Hard Drives up to about 2 TiB all have 512 byte blocks.
@@ -61,7 +63,7 @@ impl Block {
     pub const LEN_U32: u32 = 512;
 
     /// Create a new block full of zeros.
-    pub fn new() -> Block {
+    pub const fn new() -> Block {
         Block {
             contents: [0u8; Self::LEN],
         }
