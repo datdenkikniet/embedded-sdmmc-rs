@@ -1,4 +1,4 @@
-use crate::{Block, BlockCount};
+use crate::Block;
 
 use super::DirEntry;
 

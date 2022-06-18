@@ -51,6 +51,30 @@ pub trait BlockDevice {
     fn num_blocks(&mut self) -> Result<BlockCount, Self::Error>;
 }
 
+impl<T> BlockDevice for &mut T
+where
+    T: BlockDevice,
+{
+    type Error = T::Error;
+
+    fn read(
+        &mut self,
+        blocks: &mut [Block],
+        start_block_idx: BlockIdx,
+        reason: &str,
+    ) -> Result<(), Self::Error> {
+        (*self).read(blocks, start_block_idx, reason)
+    }
+
+    fn write(&mut self, blocks: &[Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
+        (*self).write(blocks, start_block_idx)
+    }
+
+    fn num_blocks(&mut self) -> Result<BlockCount, Self::Error> {
+        (*self).num_blocks()
+    }
+}
+
 impl Block {
     /// All our blocks are a fixed length of 512 bytes. We do not support
     /// 'Advanced Format' Hard Drives with 4 KiB blocks, nor weird old
