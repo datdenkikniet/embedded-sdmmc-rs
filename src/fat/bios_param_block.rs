@@ -1,21 +1,43 @@
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU8};
 
-use crate::Block;
+use crate::{Block, BlockCount, BlockIdx};
 
 use super::FatType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FatInfo {
+    Fat16,
+    Fat32(Fat32Info),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Fat32Info {
+    root_cluster: u32,
+}
+
+impl Into<FatType> for FatInfo {
+    fn into(self) -> FatType {
+        match self {
+            FatInfo::Fat16 => FatType::Fat16,
+            FatInfo::Fat32(_) => FatType::Fat32,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct BiosParameterBlock {
-    fat_type: FatType,
+    fat_info: FatInfo,
     fat_size: u32,
     reserved_sector_count: NonZeroU16,
     bytes_per_sector: NonZeroU16,
     media: NonZeroU8,
-    raw: BiosParameterBlockRaw,
     root_entry_count: u16,
     cluster_count: u32,
+    num_fats: u8,
+    sectors_per_cluster: NonZeroU8,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum BpbError {
     Fat12NotSupported,
     Fat32Field(&'static str),
@@ -30,6 +52,7 @@ pub enum BpbError {
     InvalidSignature([u8; 2]),
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Fat32BpbError {
     Count16NotZero,
     FatSize16NotZero,
@@ -37,6 +60,36 @@ pub enum Fat32BpbError {
     FsVerNotZero,
     RootClusterLessThanTwo,
     InvalidBackupBootSector(u16),
+}
+
+impl core::fmt::Debug for BiosParameterBlock {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BiosParameterBlock")
+            .field("fat_info", &self.fat_info)
+            .field("fat_size", &self.fat_size)
+            .field("reserved_sector_count", &self.reserved_sector_count)
+            .field("bytes_per_sector", &self.bytes_per_sector)
+            .field("media", &self.media)
+            .field("root_entry_count", &self.root_entry_count)
+            .field("cluster_count", &self.cluster_count)
+            .field("num_fats", &self.num_fats)
+            .field("sectors_per_cluster", &self.sectors_per_cluster)
+            .finish()
+    }
+}
+
+impl PartialEq<BiosParameterBlock> for BiosParameterBlock {
+    fn eq(&self, other: &BiosParameterBlock) -> bool {
+        self.fat_info == other.fat_info
+            && self.fat_size == other.fat_size
+            && self.reserved_sector_count == other.reserved_sector_count
+            && self.bytes_per_sector == other.bytes_per_sector
+            && self.media == other.media
+            && self.root_entry_count == other.root_entry_count
+            && self.cluster_count == other.cluster_count
+            && self.num_fats == other.num_fats
+            && self.sectors_per_cluster == other.sectors_per_cluster
+    }
 }
 
 /// The BPB_Reserved and BS_* fields are not verified.
@@ -64,7 +117,7 @@ impl BiosParameterBlock {
 
         let media = Self::media_checked(raw.media())?;
 
-        let root_entry_count = raw.root_entr_cnt();
+        let root_entry_count = raw.root_ent_cnt();
 
         let total_sector_count = Self::total_sector_count_checked(&raw)?;
 
@@ -79,25 +132,27 @@ impl BiosParameterBlock {
         );
         let cluster_count = Self::compute_cluster_count(data_sectors, sectors_per_cluster.into());
 
+        let num_fats = raw.num_fats();
+
         let mut me = Self {
             // Assume we have FAT16, to be overwritten later
-            fat_type: FatType::Fat16,
+            fat_info: FatInfo::Fat16,
             fat_size,
             reserved_sector_count,
             bytes_per_sector,
             media,
-            raw,
             root_entry_count,
             cluster_count,
+            num_fats,
+            sectors_per_cluster,
         };
 
-        me.fat_type = me.compute_fat_type()?;
+        me.fat_info = me.compute_fat_type(&raw)?;
 
-        let verification_error = me
-            .verify_signature()
+        let verification_error = Self::verify_signature(raw.signature_word())
             .or(me.verify_root_entry_count())
-            .or(me.verify_total_sector_count())
-            .or(me.verify_fat_size());
+            .or(me.verify_total_sector_count(&raw))
+            .or(me.verify_fat_size(&raw));
 
         if let Some(err) = verification_error {
             Err(err)
@@ -106,20 +161,20 @@ impl BiosParameterBlock {
         }
     }
 
-    pub fn reserved_sector_count(&self) -> NonZeroU16 {
-        self.reserved_sector_count
+    pub fn reserved_sector_count(&self) -> BlockCount {
+        BlockCount(self.reserved_sector_count.get() as u32)
     }
 
     pub fn bytes_per_sector(&self) -> NonZeroU16 {
         self.bytes_per_sector
     }
 
-    pub fn fat_size(&self) -> u32 {
-        self.fat_size
+    pub fn fat_size(&self) -> BlockCount {
+        BlockCount(self.fat_size)
     }
 
     pub fn fat_type(&self) -> FatType {
-        self.fat_type
+        self.fat_info.into()
     }
 
     pub fn media(&self) -> NonZeroU8 {
@@ -139,8 +194,38 @@ impl BiosParameterBlock {
         self.cluster_count + 1
     }
 
-    pub fn total_cluster_count(&self) -> u32 {
-        self.cluster_count + 2
+    pub fn sectors_per_cluster(&self) -> BlockCount {
+        BlockCount(self.sectors_per_cluster.get() as u32)
+    }
+
+    pub fn total_cluster_count(&self) -> BlockCount {
+        BlockCount(self.cluster_count + 2)
+    }
+
+    pub fn fat_start(&self) -> BlockIdx {
+        BlockIdx(self.reserved_sector_count.get() as u32)
+    }
+
+    pub fn fat_len(&self) -> BlockCount {
+        BlockCount(self.num_fats as u32) * self.fat_size()
+    }
+
+    pub fn root_start(&self) -> BlockIdx {
+        match self.fat_info {
+            FatInfo::Fat16 => self.fat_start() + self.fat_len(),
+            FatInfo::Fat32(fat32_info) => BlockIdx(fat32_info.root_cluster),
+        }
+    }
+
+    pub fn root_len(&self) -> BlockCount {
+        match self.fat_info {
+            FatInfo::Fat16 => BlockCount(self.root_entry_count as u32 * 32),
+            FatInfo::Fat32(_) => todo!(),
+        }
+    }
+
+    pub fn data_start(&self) -> BlockIdx {
+        self.root_start() + self.root_len()
     }
 
     fn compute_data_sectors(
@@ -160,13 +245,14 @@ impl BiosParameterBlock {
         data_cluster_count
     }
 
-    fn compute_fat_type(&self) -> Result<FatType, BpbError> {
+    fn compute_fat_type(&self, raw: &BiosParameterBlockRaw) -> Result<FatInfo, BpbError> {
         if self.cluster_count < 4085 {
             return Err(BpbError::Fat12NotSupported);
         } else if self.cluster_count < 65525 {
-            Ok(FatType::Fat16)
+            Ok(FatInfo::Fat16)
         } else {
-            Ok(FatType::Fat32)
+            let root_cluster = Self::root_cluster_checked(raw.root_clus())?;
+            Ok(FatInfo::Fat32(Fat32Info { root_cluster }))
         }
     }
 
@@ -216,17 +302,17 @@ impl BiosParameterBlock {
         }
     }
 
-    fn verify_total_sector_count(&self) -> Option<BpbError> {
-        let _16 = self.raw.tot_sec_16();
-        let _32 = self.raw.tot_sec_32();
+    fn verify_total_sector_count(&self, raw: &BiosParameterBlockRaw) -> Option<BpbError> {
+        let _16 = raw.tot_sec_16();
+        let _32 = raw.tot_sec_32();
 
         if _16 == 0 && _32 == 0 {
             return Some(BpbError::BothSectorCountsZero);
         }
 
-        match self.fat_type {
-            FatType::Fat16 => None,
-            FatType::Fat32 => {
+        match self.fat_info {
+            FatInfo::Fat16 => None,
+            FatInfo::Fat32(_) => {
                 if _16 == 0 {
                     None
                 } else {
@@ -238,8 +324,8 @@ impl BiosParameterBlock {
 
     fn verify_root_entry_count(&self) -> Option<BpbError> {
         let value = self.root_entry_count;
-        match self.fat_type {
-            FatType::Fat16 => {
+        match self.fat_info {
+            FatInfo::Fat16 => {
                 let bytes_per_sec = self.bytes_per_sector().get() as u32;
                 let multiplied = value as u32 * 32;
                 if multiplied % bytes_per_sec == 0 {
@@ -248,7 +334,7 @@ impl BiosParameterBlock {
                     Some(BpbError::RootEntryCountSize)
                 }
             }
-            FatType::Fat32 => {
+            FatInfo::Fat32(_) => {
                 if value != 0 {
                     Some(BpbError::Fat32(Fat32BpbError::RootEntryCountNotZero))
                 } else {
@@ -258,13 +344,13 @@ impl BiosParameterBlock {
         }
     }
 
-    fn verify_fat_size(&self) -> Option<BpbError> {
-        let _16 = self.raw.fat_sz_16();
-        let _32 = self.raw.fat_sz_32();
+    fn verify_fat_size(&self, raw: &BiosParameterBlockRaw) -> Option<BpbError> {
+        let _16 = raw.fat_sz_16();
+        let _32 = raw.fat_sz_32();
 
-        match self.fat_type {
-            FatType::Fat16 => None,
-            FatType::Fat32 => {
+        match self.fat_info {
+            FatInfo::Fat16 => None,
+            FatInfo::Fat32(_) => {
                 if _16 == 0 {
                     None
                 } else {
@@ -275,8 +361,7 @@ impl BiosParameterBlock {
     }
 
     // This procedure is the same for all FATs
-    fn verify_signature(&self) -> Option<BpbError> {
-        let signature: [u8; 2] = self.raw.signature_word();
+    fn verify_signature(signature: [u8; 2]) -> Option<BpbError> {
         if signature == &Self::SIGNATURE[..] {
             None
         } else {
@@ -285,54 +370,32 @@ impl BiosParameterBlock {
     }
 
     // All following functions are fat32 only
-    fn fat32_only(&self, field_name: &'static str) -> Result<(), BpbError> {
-        if self.fat_type == FatType::Fat32 {
-            Ok(())
-        } else {
-            Err(BpbError::Fat32Field(field_name))
-        }
-    }
 
-    pub fn ext_flags(&self) -> Result<u16, BpbError> {
-        self.fat32_only("ext_flags")?;
-        let value = self.raw.ext_flags();
-        Ok(value)
-    }
-
-    pub fn fs_version(&self) -> Result<u16, BpbError> {
-        self.fat32_only("fs_version")?;
-        let value = self.raw.fs_ver();
-        if value == 0 {
-            Ok(value)
+    #[allow(dead_code)]
+    fn fs_version_checked(fs_version: u16) -> Result<u16, BpbError> {
+        if fs_version == 0 {
+            Ok(fs_version)
         } else {
             Err(BpbError::Fat32(Fat32BpbError::FsVerNotZero))
         }
     }
 
-    pub fn root_cluster(&self) -> Result<u32, BpbError> {
-        self.fat32_only("root_cluster")?;
-        let value = self.raw.root_clus();
-        if value >= 2 {
-            Ok(value)
+    #[allow(dead_code)]
+    fn root_cluster_checked(root_cluster: u32) -> Result<u32, BpbError> {
+        if root_cluster >= 2 {
+            Ok(root_cluster)
         } else {
             Err(BpbError::Fat32(Fat32BpbError::RootClusterLessThanTwo))
         }
     }
 
-    pub fn fs_info(&self) -> Result<u16, BpbError> {
-        self.fat32_only("fs_info")?;
-        let value = self.raw.fs_info();
-        Ok(value)
-    }
-
-    pub fn bk_boot_sector(&self) -> Result<u16, BpbError> {
-        self.fat32_only("bk_boot_sector")?;
-        let value = self.raw.bk_boot_sec();
-        if value == 0 || value == 6 {
-            Ok(value)
+    #[allow(dead_code)]
+    fn bk_boot_sector_checked(bk_boot_sector: u16) -> Result<u16, BpbError> {
+        if bk_boot_sector == 0 || bk_boot_sector == 6 {
+            Ok(bk_boot_sector)
         } else {
             Err(BpbError::Fat32(Fat32BpbError::InvalidBackupBootSector(
-                value,
+                bk_boot_sector,
             )))
         }
     }
@@ -352,7 +415,7 @@ impl BiosParameterBlockRaw {
     define_field!(sec_per_clu, u8, 13);
     define_field!(rsvd_sec_cnt, u16, 14);
     define_field!(num_fats, u8, 16);
-    define_field!(root_entr_cnt, u16, 17);
+    define_field!(root_ent_cnt, u16, 17);
     define_field!(tot_sec_16, u16, 19);
     define_field!(media, u8, 21);
     define_field!(fat_sz_16, u16, 22);

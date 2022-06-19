@@ -220,6 +220,17 @@ pub struct Mbr<BD> {
     partitions: [Option<PartitionInfo>; 4],
 }
 
+impl<BD> Debug for Mbr<BD>
+where
+    BD: Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Mbr")
+            .field("partitions", &self.partitions)
+            .finish()
+    }
+}
+
 impl<BD> Mbr<BD> {
     pub fn get_partition_info(&self, partition_num: PartitionNumber) -> Option<PartitionInfo> {
         let index = match partition_num {
@@ -368,6 +379,7 @@ where
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[derive(Debug)]

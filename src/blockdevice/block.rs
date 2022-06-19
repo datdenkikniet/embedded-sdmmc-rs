@@ -75,6 +75,14 @@ impl core::ops::Add<BlockCount> for BlockIdx {
     }
 }
 
+impl core::ops::Mul<BlockCount> for BlockIdx {
+    type Output = BlockIdx;
+
+    fn mul(self, rhs: BlockCount) -> Self::Output {
+        BlockIdx(self.0 * rhs.0)
+    }
+}
+
 impl core::ops::AddAssign<BlockCount> for BlockIdx {
     fn add_assign(&mut self, rhs: BlockCount) {
         self.0 += rhs.0
@@ -85,6 +93,14 @@ impl core::ops::Add<BlockCount> for BlockCount {
     type Output = BlockCount;
     fn add(self, rhs: BlockCount) -> BlockCount {
         BlockCount(self.0 + rhs.0)
+    }
+}
+
+impl core::ops::Add<BlockIdx> for BlockIdx {
+    type Output = BlockIdx;
+
+    fn add(self, rhs: BlockIdx) -> Self::Output {
+        BlockIdx(self.0 + rhs.0)
     }
 }
 

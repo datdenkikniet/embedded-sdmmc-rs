@@ -12,7 +12,7 @@
 //!
 //! You will need something that implements the `BlockDevice` trait, which can read and write the 512-byte blocks (or sectors) from your card. If you were to implement this over USB Mass Storage, there's no reason this crate couldn't work with a USB Thumb Drive, but we only supply a `BlockDevice` suitable for reading SD and SDHC cards over SPI.
 //!
-//! ```rust
+//! ```rust,ignore
 //! # struct DummySpi;
 //! # struct DummyCsPin;
 //! # struct DummyUart;
@@ -87,7 +87,7 @@ pub mod sdmmc;
 
 pub mod fat;
 
-pub use crate::blockdevice::{Block, BlockCount, BlockDevice, BlockIdx};
+pub use crate::blockdevice::{Block, BlockCount, BlockDevice, BlockIdx, MemoryBlockDevice};
 pub use crate::sdmmc::Error as SdMmcError;
 pub use crate::sdmmc::SdMmcSpi;
 
