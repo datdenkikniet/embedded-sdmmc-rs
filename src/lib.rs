@@ -63,7 +63,7 @@
 //! Make sure that either the `log` feature or the `defmt-log` feature is enabled.
 
 #![cfg_attr(not(test), no_std)]
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 
 // ****************************************************************************
 //
@@ -82,9 +82,10 @@ use defmt::debug;
 mod structure;
 
 mod blockdevice;
-pub mod fat;
 pub mod mbr;
 pub mod sdmmc;
+
+pub mod fat;
 
 pub use crate::blockdevice::{Block, BlockCount, BlockDevice, BlockIdx};
 pub use crate::sdmmc::Error as SdMmcError;

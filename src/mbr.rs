@@ -175,7 +175,7 @@ impl PartitionInfo {
     const NUM_BLOCKS_IDX: usize = 12;
     pub(crate) const PARTITION_INFO_LENGTH: usize = 16;
 
-    pub fn from_info<E>(info: &[u8]) -> Result<Self, Error<E>>
+    pub fn from_info_bytes<E>(info: &[u8]) -> Result<Self, Error<E>>
     where
         E: Debug,
     {
@@ -208,6 +208,11 @@ impl PartitionInfo {
             block_count: BlockCount(num_blocks),
         })
     }
+}
+
+pub enum PartitionOpenMode {
+    ReadWrite,
+    ReadOnly,
 }
 
 pub struct Mbr<BD> {
@@ -293,7 +298,7 @@ where
 
         let pinfo_data =
             &first_block[pinfo_start..pinfo_start + PartitionInfo::PARTITION_INFO_LENGTH];
-        PartitionInfo::from_info(pinfo_data)
+        PartitionInfo::from_info_bytes(pinfo_data)
     }
 }
 
@@ -301,13 +306,32 @@ impl<'bd, BD> Mbr<BD>
 where
     &'bd mut BD: BlockDevice + 'bd,
 {
-    pub fn get_partition(
+    pub fn open_partition(
         &'bd mut self,
         partition_num: PartitionNumber,
     ) -> Option<Partition<&'bd mut BD>> {
         let partition_info = self.get_partition_info(partition_num)?;
         Some(Partition {
             block_device: &mut self.block_dev,
+            info: partition_info,
+        })
+    }
+}
+
+impl<'bd, BD> Mbr<BD>
+where
+    &'bd BD: BlockDevice + 'bd,
+{
+    /// Get representation for the partition with number `partition_num`, passing
+    /// this partition an immutable reference to the `BD` stored within this `Mbr`,
+    /// so that multiple partitions can be opened simultaneously
+    pub fn get_partition_immut(
+        &'bd self,
+        partition_num: PartitionNumber,
+    ) -> Option<Partition<&'bd BD>> {
+        let partition_info = self.get_partition_info(partition_num)?;
+        Some(Partition {
+            block_device: &self.block_dev,
             info: partition_info,
         })
     }
@@ -339,24 +363,6 @@ where
             },
             self.block_dev.clone(),
         )
-    }
-}
-
-impl<'bd, BD> Mbr<BD>
-where
-    &'bd BD: BlockDevice + 'bd,
-{
-    /// Get representation for the partition with number `partition_num`, while passing
-    /// this partition an immutable reference to the `BD` stored within this `Mbr`
-    pub fn get_partition_immut(
-        &'bd self,
-        partition_num: PartitionNumber,
-    ) -> Option<Partition<&'bd BD>> {
-        let partition_info = self.get_partition_info(partition_num)?;
-        Some(Partition {
-            block_device: &self.block_dev,
-            info: partition_info,
-        })
     }
 }
 
@@ -596,7 +602,7 @@ mod tests {
     #[test]
     fn partition_one() {
         let mut mbr = Mbr::new(DummyBlockDevice).unwrap();
-        let mut partition_one = mbr.get_partition(PartitionNumber::One).unwrap();
+        let mut partition_one = mbr.open_partition(PartitionNumber::One).unwrap();
 
         assert_eq!(
             partition_one.info(),

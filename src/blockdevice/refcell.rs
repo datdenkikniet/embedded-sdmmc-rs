@@ -1,4 +1,6 @@
-use crate::{Block, BlockCount, BlockDevice, BlockIdx};
+use crate::{Block, BlockDevice, BlockIdx};
+
+use super::BlockCount;
 
 impl<T> BlockDevice for core::cell::RefCell<T>
 where

@@ -1,60 +1,115 @@
-#![allow(missing_docs)]
+use core::convert::TryInto;
 
-mod boot_param_block;
-mod fat16;
-pub use boot_param_block::{BootParameterBlock, BpbError, FatType as BpbFatType};
-use core::ops::RangeInclusive;
+use crate::{Block, BlockDevice, BlockIdx};
 
-use fat16::FilesystemInfo as Fat16Info;
+use self::bios_param_block::BiosParameterBlock;
 
-mod fat32;
-use fat32::FilesystemInfo as Fat32Info;
+pub mod bios_param_block;
 
-use crate::{Block, BlockIdx};
-
-pub struct File;
-
-pub struct Sector;
-
-pub struct Cluster(u32);
-
-pub struct VolumeName([u8; 11]);
-
-pub struct Volume {
-    volume_name: VolumeName,
-    info: FileSystem,
-    blocks_per_cluster: u8,
-    blocks: RangeInclusive<BlockIdx>,
-    reserved_sectors: RangeInclusive<BlockIdx>,
-    fat_region: RangeInclusive<BlockIdx>,
-    root_directory_region: Option<RangeInclusive<BlockIdx>>,
-    data_region_start: BlockIdx,
-    next_free_cluster: Option<Cluster>,
-    cluster_count: u32,
-    free_cluster_count: Option<u32>,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FatType {
+    // Fat12
+    Fat16,
+    Fat32,
 }
 
-#[derive(Debug, Clone)]
-pub struct FilenameError;
-
-enum FileSystem {
-    Fat16(Fat16Info),
-    Fat32(Fat32Info),
+pub struct FatVolume<BD>
+where
+    BD: BlockDevice,
+{
+    bpb: BiosParameterBlock,
+    block_device: BD,
 }
 
-impl FileSystem {
-    const FOOTER_VALUE: u16 = 0xAA55;
+impl<BD> FatVolume<BD>
+where
+    BD: BlockDevice,
+{
+    fn read_block(&mut self, idx: BlockIdx) -> Result<Block, BD::Error> {
+        let mut blocks = [Block::new()];
+        self.block_device.read(&mut blocks, idx, "")?;
+        let [block] = blocks;
+        Ok(block)
+    }
 
-    pub fn from_block(block: Block) -> Result<Self, ()> {
-        todo!()
+    pub fn get_fat_entry(&mut self, fat_number: u32, cluster: Cluster) -> Result<Entry, BD::Error> {
+        let fat_offset = match self.bpb.fat_type() {
+            FatType::Fat16 => cluster.0 * 2,
+            FatType::Fat32 => cluster.0 * 4,
+        };
+
+        let sec_num = self.bpb.reserved_sector_count().get() as u32
+            + (fat_offset / self.bpb.bytes_per_sector().get() as u32);
+        let entry_sector = Sector(sec_num);
+
+        let entry_offset = (fat_offset % self.bpb.bytes_per_sector().get() as u32) as usize;
+
+        let sector = if fat_number == 1 {
+            entry_sector
+        } else {
+            Sector((fat_number * self.bpb.fat_size()) + entry_sector.0)
+        };
+
+        let sector = self.read_block(sector.into())?;
+
+        let entry_value = match self.bpb.fat_type() {
+            FatType::Fat16 => u16::from_le_bytes(
+                sector.contents[entry_offset..entry_offset + 2]
+                    .try_into()
+                    .expect("Infallible"),
+            ) as u32,
+            FatType::Fat32 => {
+                u32::from_le_bytes(
+                    sector.contents[entry_offset..entry_offset + 4]
+                        .try_into()
+                        .expect("Infallible"),
+                ) as u32
+                    & 0x0FFFFFFF
+            }
+        };
+
+        Ok(Entry(entry_value))
     }
 }
 
-struct DirEntry<'a> {
-    data: &'a [u8],
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Entry(u32);
+
+impl Entry {
+    const ALLOC_MIN: u32 = 2;
+
+    pub const FREE: Self = Self(0);
+
+    pub const FAT32_BAD: Self = Self(0xFFFFFF7);
+    pub const FAT32_FINAL: Self = Self(0xFFFFFFFF);
+    const F32_RESERVED_MAX: u32 = 0xFFFFFF6;
+    const F32_RESERVED_RANGE_START: u32 = 0xFFFFFF8;
+    const F32_RESERVED_RANGE_END: u32 = 0xFFFFFFE;
+
+    pub const FAT16_BAD: Self = Self(0xFFF7);
+    pub const FAT16_FINAL: Self = Self(0xFFFF);
+    const F16_RESERVED_MAX: u32 = 0xFFF6;
+    const F16_RESERVED_RANGE_START: u32 = 0xFFF8;
+    const F16_RESERVED_RANGE_END: u32 = 0xFFFE;
+
+    pub fn new(value: u32, _fat_type: FatType) -> Self {
+        Self(value)
+    }
+
+    pub fn is_free(&self, fat_type: FatType) -> bool {
+        match fat_type {
+            FatType::Fat16 => self == &Self::FREE,
+            FatType::Fat32 => Entry(self.0 & 0xFFFFFFF) == Self::FREE,
+        }
+    }
 }
 
-impl<'a> DirEntry<'a> {
-    pub(crate) const LEN: usize = 32;
-    pub(crate) const LEN_U32: u32 = Self::LEN as u32;
+pub struct Sector(u32);
+
+impl Into<BlockIdx> for Sector {
+    fn into(self) -> BlockIdx {
+        BlockIdx(self.0)
+    }
 }
+
+pub struct Cluster(u32);

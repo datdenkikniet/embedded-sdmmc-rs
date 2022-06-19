@@ -9,12 +9,13 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/thejpster/embedded-sdmmc-rs"
 edition = "2018"
 readme = "README.md"
+autoexamples = false
 
 [dependencies]
 embedded-hal = "0.2.3"
-byteorder = { version = "1", default-features = false }
 log = { version = "0.4", default-features = false, optional = true }
 defmt = { version = "0.3", optional = true }
+bitflags = "1.3"
 
 [dev-dependencies]
 hex-literal = "0.3"
@@ -22,5 +23,5 @@ env_logger = "0.8"
 
 [features]
 defmt-log = [ "defmt" ]
-default = [ "log", "refcell-blockdevice" ]
 refcell-blockdevice = [ ]
+default = [ "log", "refcell-blockdevice" ]
