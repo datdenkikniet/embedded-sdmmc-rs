@@ -1,6 +1,6 @@
-use crate::{BlockCount, BlockDevice, BlockIdx};
+use crate::{blockdevice::BlockIter, BlockCount, BlockDevice, BlockIdx};
 
-use super::{Cluster, FatVolume, SectorIter};
+use super::{cluster::ClusterIterator, Cluster, FatVolume, SectorIter};
 
 #[derive(Debug, Clone, Copy)]
 pub enum RootDirectorySectors {
@@ -12,25 +12,38 @@ pub enum RootDirectorySectors {
 }
 
 impl RootDirectorySectors {
-    pub fn iter(&self, fat_number: u32) -> RootDirIter {
-        RootDirIter::new(fat_number, self.clone())
+    pub fn iter(&self, fat_number: u32, sectors_per_cluster: BlockCount) -> RootDirIter {
+        RootDirIter::new(fat_number, sectors_per_cluster, self.clone())
     }
 }
 
 #[derive(Debug)]
+enum RootDirIterInner {
+    Cluster(ClusterIterator),
+    Region(BlockIter),
+}
+
+#[derive(Debug)]
 pub struct RootDirIter {
-    current: RootDirectorySectors,
-    fat_number: u32,
-    iterated_cluster_sectors: u32,
+    inner: RootDirIterInner,
 }
 
 impl RootDirIter {
-    pub fn new(fat_number: u32, start: RootDirectorySectors) -> Self {
-        Self {
-            current: start,
-            fat_number,
-            iterated_cluster_sectors: 0,
-        }
+    pub fn new(
+        fat_number: u32,
+        sectors_per_cluster: BlockCount,
+        start: RootDirectorySectors,
+    ) -> Self {
+        let inner = match start {
+            RootDirectorySectors::Cluster(cluster) => {
+                RootDirIterInner::Cluster(cluster.all_sectors(fat_number, sectors_per_cluster))
+            }
+            RootDirectorySectors::Region { start_block, len } => {
+                RootDirIterInner::Region(start_block.range(len))
+            }
+        };
+
+        Self { inner }
     }
 }
 
@@ -39,34 +52,9 @@ impl SectorIter for RootDirIter {
     where
         BD: BlockDevice,
     {
-        let Self {
-            current,
-            fat_number,
-            iterated_cluster_sectors,
-        } = self;
-
-        match current {
-            RootDirectorySectors::Cluster(cluster) => {
-                if *iterated_cluster_sectors == volume.bpb.sectors_per_cluster().0 {
-                    *cluster = volume.find_next_cluster(*fat_number, &cluster).ok()??;
-                    *iterated_cluster_sectors = 0;
-                }
-                cluster
-                    .sectors(volume.bpb.sectors_per_cluster())
-                    .skip(*iterated_cluster_sectors as usize)
-                    .next()
-            }
-            RootDirectorySectors::Region { start_block, len } => {
-                let res = *start_block;
-                let still_there = len != &BlockCount(0);
-                if still_there {
-                    *len -= BlockCount(1);
-                    *start_block += BlockCount(1);
-                    Some(res)
-                } else {
-                    None
-                }
-            }
+        match &mut self.inner {
+            RootDirIterInner::Cluster(cluster) => cluster.next(volume),
+            RootDirIterInner::Region(sectors) => sectors.next(),
         }
     }
 }

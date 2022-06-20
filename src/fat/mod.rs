@@ -183,7 +183,12 @@ where
     }
 
     pub fn root_directory_iter<'a>(&'a mut self) -> DirIter<'a, BD, RootDirIter> {
-        DirIter::new(self, self.bpb.root_sectors().iter(1))
+        DirIter::new(
+            self,
+            self.bpb
+                .root_sectors()
+                .iter(1, self.bpb.sectors_per_cluster()),
+        )
     }
 
     pub fn bpb(&self) -> &BiosParameterBlock {
