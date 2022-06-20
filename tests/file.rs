@@ -1,7 +1,7 @@
 use embedded_sdmmc::{
-    fat::{bios_param_block::BiosParameterBlock, Cluster, FatVolume},
+    fat::{FatVolume, SectorIter},
     mbr::{Mbr, PartitionInfo, PartitionNumber, PartitionType},
-    BlockCount, BlockDevice, BlockIdx, MemoryBlockDevice,
+    BlockCount, MemoryBlockDevice,
 };
 
 #[test]
@@ -34,12 +34,11 @@ fn read_disk_file() {
 
     let mut fat_volume = FatVolume::new(first_partition).unwrap();
 
-    let mut iter = fat_volume.root_directory();
+    let mut iter = fat_volume.root_directory_iter();
 
-    for file in &mut iter {
-        println!("{:?}", file);
-        println!("{}", file.name().main_name());
+    for dir_entry in &mut iter {
+        println!("{:X?}", dir_entry);
+        println!("{}", dir_entry.name().main_name());
     }
-
     println!("{}", iter.total_entries_read());
 }

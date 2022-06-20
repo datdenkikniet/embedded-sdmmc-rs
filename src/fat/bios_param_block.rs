@@ -2,7 +2,7 @@ use core::num::{NonZeroU16, NonZeroU32, NonZeroU8};
 
 use crate::{Block, BlockCount, BlockDevice, BlockIdx};
 
-use super::{Cluster, FatType};
+use super::{root_directory::RootDirectorySectors, Cluster, FatType};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FatInfo {
@@ -210,29 +210,32 @@ impl BiosParameterBlock {
         BlockCount(self.num_fats as u32) * self.fat_size()
     }
 
-    pub fn root_start(&self) -> BlockIdx {
-        match self.fat_info {
-            FatInfo::Fat16 => self.fat_start() + self.fat_len(),
-            FatInfo::Fat32(fat32_info) => fat32_info
-                .root_cluster
-                .sectors(self)
-                .next()
-                .expect("Missing root sector"),
-        }
-    }
-
-    pub fn root_len(&self) -> BlockCount {
-        match self.fat_info {
-            FatInfo::Fat16 => BlockCount(self.root_entry_count as u32 * 32),
-            FatInfo::Fat32(f32_info) => todo!(),
-        }
-    }
-
     pub fn data_start<BD>(&self) -> BlockIdx
     where
         BD: BlockDevice,
     {
         self.root_start() + self.root_len()
+    }
+
+    pub fn root_sectors(&self) -> RootDirectorySectors {
+        match self.fat_info {
+            FatInfo::Fat16 => RootDirectorySectors::Region {
+                start_block: self.root_start(),
+                len: self.root_len(),
+            },
+            FatInfo::Fat32(fat32_info) => RootDirectorySectors::Cluster(fat32_info.root_cluster),
+        }
+    }
+
+    fn root_start(&self) -> BlockIdx {
+        self.fat_start() + self.fat_len()
+    }
+
+    fn root_len(&self) -> BlockCount {
+        match self.fat_info {
+            FatInfo::Fat16 => BlockCount(self.root_entry_count as u32 * 32),
+            FatInfo::Fat32(_) => BlockCount(0),
+        }
     }
 
     fn compute_data_sectors(
