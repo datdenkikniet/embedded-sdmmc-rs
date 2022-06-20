@@ -180,6 +180,7 @@ impl BlockCount {
 }
 
 /// An iterator returned from `Block::range`.
+#[derive(Debug, Clone)]
 pub struct BlockIter {
     inclusive_end: BlockIdx,
     current: BlockIdx,

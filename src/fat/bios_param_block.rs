@@ -1,8 +1,8 @@
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU8};
 
-use crate::{Block, BlockCount, BlockIdx};
+use crate::{Block, BlockCount, BlockDevice, BlockIdx};
 
-use super::FatType;
+use super::{Cluster, FatType};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FatInfo {
@@ -12,7 +12,7 @@ enum FatInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Fat32Info {
-    root_cluster: u32,
+    root_cluster: Cluster,
 }
 
 impl Into<FatType> for FatInfo {
@@ -213,18 +213,25 @@ impl BiosParameterBlock {
     pub fn root_start(&self) -> BlockIdx {
         match self.fat_info {
             FatInfo::Fat16 => self.fat_start() + self.fat_len(),
-            FatInfo::Fat32(fat32_info) => BlockIdx(fat32_info.root_cluster),
+            FatInfo::Fat32(fat32_info) => fat32_info
+                .root_cluster
+                .sectors(self)
+                .next()
+                .expect("Missing root sector"),
         }
     }
 
     pub fn root_len(&self) -> BlockCount {
         match self.fat_info {
             FatInfo::Fat16 => BlockCount(self.root_entry_count as u32 * 32),
-            FatInfo::Fat32(_) => todo!(),
+            FatInfo::Fat32(f32_info) => todo!(),
         }
     }
 
-    pub fn data_start(&self) -> BlockIdx {
+    pub fn data_start<BD>(&self) -> BlockIdx
+    where
+        BD: BlockDevice,
+    {
         self.root_start() + self.root_len()
     }
 
@@ -252,7 +259,9 @@ impl BiosParameterBlock {
             Ok(FatInfo::Fat16)
         } else {
             let root_cluster = Self::root_cluster_checked(raw.root_clus())?;
-            Ok(FatInfo::Fat32(Fat32Info { root_cluster }))
+            Ok(FatInfo::Fat32(Fat32Info {
+                root_cluster: Cluster(root_cluster),
+            }))
         }
     }
 

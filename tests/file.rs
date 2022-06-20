@@ -32,5 +32,14 @@ fn read_disk_file() {
 
     let first_partition = mbr.open_partition(PartitionNumber::One).unwrap();
 
-    let fat_volume = FatVolume::new(first_partition).unwrap();
+    let mut fat_volume = FatVolume::new(first_partition).unwrap();
+
+    let mut iter = fat_volume.root_directory();
+
+    for file in &mut iter {
+        println!("{:?}", file);
+        println!("{}", file.name().main_name());
+    }
+
+    println!("{}", iter.total_entries_read());
 }
