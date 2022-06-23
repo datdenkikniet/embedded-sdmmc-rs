@@ -10,13 +10,9 @@ impl Cluster {
         Self(cluster_number)
     }
 
-    pub fn sectors(&self, sectors_per_cluster: BlockCount) -> BlockIter {
-        let start = BlockIdx(self.0);
+    pub fn sectors(&self, data_start: BlockIdx, sectors_per_cluster: BlockCount) -> BlockIter {
+        let start = data_start + (BlockIdx(self.0.saturating_sub(2)) * sectors_per_cluster);
         start.range(sectors_per_cluster)
-    }
-
-    pub fn all_sectors(&self, fat_number: u32, sectors_per_cluster: BlockCount) -> ClusterIterator {
-        ClusterIterator::new(fat_number, self.clone(), sectors_per_cluster)
     }
 }
 
@@ -24,34 +20,43 @@ impl Cluster {
 pub struct ClusterIterator {
     fat_number: u32,
     current_cluster: Cluster,
+    data_start: BlockIdx,
     sectors_per_cluster: BlockCount,
-    cluster_sectors: BlockIter,
+    current_cluster_sectors: BlockIter,
 }
 
 impl ClusterIterator {
-    pub fn new(fat_number: u32, start: Cluster, sectors_per_cluster: BlockCount) -> Self {
+    pub fn new(
+        fat_number: u32,
+        data_start: BlockIdx,
+        start: Cluster,
+        sectors_per_cluster: BlockCount,
+    ) -> Self {
         Self {
             fat_number,
             sectors_per_cluster,
+            data_start,
             current_cluster: start,
-            cluster_sectors: start.sectors(sectors_per_cluster),
+            current_cluster_sectors: start.sectors(data_start, sectors_per_cluster),
         }
     }
 }
 
-impl SectorIter for ClusterIterator {
-    fn next<BD>(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx>
-    where
-        BD: BlockDevice,
-    {
-        if let Some(next_sector) = self.cluster_sectors.next() {
+impl<BD> SectorIter<BD> for ClusterIterator
+where
+    BD: BlockDevice,
+{
+    fn next(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx> {
+        if let Some(next_sector) = self.current_cluster_sectors.next() {
             return Some(next_sector);
         } else {
-            let next_cluster = volume
+            self.current_cluster = volume
                 .find_next_cluster(self.fat_number, &self.current_cluster)
                 .ok()??;
-            self.cluster_sectors = next_cluster.sectors(self.sectors_per_cluster);
-            self.cluster_sectors.next()
+            self.current_cluster_sectors = self
+                .current_cluster
+                .sectors(self.data_start, self.sectors_per_cluster);
+            self.current_cluster_sectors.next()
         }
     }
 }

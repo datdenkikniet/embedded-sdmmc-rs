@@ -1,6 +1,6 @@
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU8};
 
-use crate::{Block, BlockCount, BlockDevice, BlockIdx};
+use crate::{Block, BlockCount, BlockIdx};
 
 use super::{root_directory::RootDirectorySectors, Cluster, FatType};
 
@@ -210,17 +210,14 @@ impl BiosParameterBlock {
         BlockCount(self.num_fats as u32) * self.fat_size()
     }
 
-    pub fn data_start<BD>(&self) -> BlockIdx
-    where
-        BD: BlockDevice,
-    {
+    pub fn data_start(&self) -> BlockIdx {
         self.root_start() + self.root_len()
     }
 
     pub fn root_sectors(&self) -> RootDirectorySectors {
         match self.fat_info {
             FatInfo::Fat16 => RootDirectorySectors::Region {
-                start_block: self.root_start(),
+                start_sector: self.root_start(),
                 len: self.root_len(),
             },
             FatInfo::Fat32(fat32_info) => RootDirectorySectors::Cluster(fat32_info.root_cluster),

@@ -1,3 +1,5 @@
+use core::marker::PhantomData;
+
 use crate::{blockdevice::BlockIter, BlockCount, BlockDevice, BlockIdx};
 
 use super::{cluster::ClusterIterator, Cluster, FatVolume, SectorIter};
@@ -6,14 +8,17 @@ use super::{cluster::ClusterIterator, Cluster, FatVolume, SectorIter};
 pub enum RootDirectorySectors {
     Cluster(Cluster),
     Region {
-        start_block: BlockIdx,
+        start_sector: BlockIdx,
         len: BlockCount,
     },
 }
 
 impl RootDirectorySectors {
-    pub fn iter(&self, fat_number: u32, sectors_per_cluster: BlockCount) -> RootDirIter {
-        RootDirIter::new(fat_number, sectors_per_cluster, self.clone())
+    pub fn iter<BD>(&self, fat_volume: &mut FatVolume<BD>) -> RootDirIter<BD>
+    where
+        BD: BlockDevice,
+    {
+        RootDirIter::new(fat_volume, self.clone())
     }
 }
 
@@ -24,34 +29,40 @@ enum RootDirIterInner {
 }
 
 #[derive(Debug)]
-pub struct RootDirIter {
+pub struct RootDirIter<BD>
+where
+    BD: BlockDevice,
+{
     inner: RootDirIterInner,
+    _volume: PhantomData<BD>,
 }
 
-impl RootDirIter {
-    pub fn new(
-        fat_number: u32,
-        sectors_per_cluster: BlockCount,
-        start: RootDirectorySectors,
-    ) -> Self {
+impl<BD> RootDirIter<BD>
+where
+    BD: BlockDevice,
+{
+    pub fn new(fat_volume: &mut FatVolume<BD>, start: RootDirectorySectors) -> Self {
         let inner = match start {
             RootDirectorySectors::Cluster(cluster) => {
-                RootDirIterInner::Cluster(cluster.all_sectors(fat_number, sectors_per_cluster))
+                RootDirIterInner::Cluster(fat_volume.all_sectors(cluster))
             }
-            RootDirectorySectors::Region { start_block, len } => {
-                RootDirIterInner::Region(start_block.range(len))
+            RootDirectorySectors::Region { start_sector, len } => {
+                RootDirIterInner::Region(start_sector.range(len))
             }
         };
 
-        Self { inner }
+        Self {
+            inner,
+            _volume: Default::default(),
+        }
     }
 }
 
-impl SectorIter for RootDirIter {
-    fn next<BD>(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx>
-    where
-        BD: BlockDevice,
-    {
+impl<BD> SectorIter<BD> for RootDirIter<BD>
+where
+    BD: BlockDevice,
+{
+    fn next(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx> {
         match &mut self.inner {
             RootDirIterInner::Cluster(cluster) => cluster.next(volume),
             RootDirIterInner::Region(sectors) => sectors.next(),

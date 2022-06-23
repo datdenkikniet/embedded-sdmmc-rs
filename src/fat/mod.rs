@@ -1,26 +1,26 @@
 use core::{convert::TryInto, marker::PhantomData, num::NonZeroU8};
 
-use crate::{BlockCount, BlockDevice, BlockIdx};
+use crate::{BlockDevice, BlockIdx};
 
 use self::{
     bios_param_block::{BiosParameterBlock, BpbError},
     block_byte_cache::BlockByteCache,
     cluster::{Cluster, ClusterIterator},
+    directory::{DirEntry, DirIter},
     root_directory::RootDirIter,
 };
 
-pub use directory::{DirEntry, DirIter};
-
 pub mod bios_param_block;
-mod block_byte_cache;
-mod cluster;
-mod directory;
-mod root_directory;
+pub mod block_byte_cache;
+pub mod cluster;
+pub mod directory;
+pub mod root_directory;
 
-pub trait SectorIter {
-    fn next<BD>(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx>
-    where
-        BD: BlockDevice;
+pub trait SectorIter<BD>
+where
+    BD: BlockDevice,
+{
+    fn next(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx>;
 }
 
 bitflags::bitflags! {
@@ -182,17 +182,23 @@ where
         }
     }
 
-    pub fn root_directory_iter<'a>(&'a mut self) -> DirIter<'a, BD, RootDirIter> {
-        DirIter::new(
-            self,
-            self.bpb
-                .root_sectors()
-                .iter(1, self.bpb.sectors_per_cluster()),
-        )
+    pub fn root_directory_iter<'a>(&'a mut self) -> DirIter<'a, BD, RootDirIter<BD>> {
+        let root_sectors = self.bpb().root_sectors();
+        let iter = root_sectors.iter(self);
+        DirIter::new(self, iter)
     }
 
     pub fn bpb(&self) -> &BiosParameterBlock {
         &self.bpb
+    }
+
+    pub fn all_sectors(&mut self, cluster: Cluster) -> ClusterIterator {
+        ClusterIterator::new(
+            1,
+            self.bpb.data_start(),
+            cluster.clone(),
+            self.bpb.sectors_per_cluster(),
+        )
     }
 }
 
@@ -253,8 +259,7 @@ pub struct File<BD>
 where
     BD: BlockDevice,
 {
-    fat_number: u32,
-    first_cluster: Cluster,
+    dir_entry: DirEntry,
     sectors: ClusterIterator,
     read_cache: BlockByteCache,
     _block_device: PhantomData<BD>,
@@ -266,7 +271,6 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("File")
-            .field("first_cluster", &self.first_cluster)
             .field("sectors", &self.sectors)
             .field("read_cache", &self.read_cache)
             .finish()
@@ -277,25 +281,19 @@ impl<BD> File<BD>
 where
     BD: BlockDevice,
 {
-    pub fn new(
-        sectors_per_cluster: BlockCount,
-        fat_number: u32,
-        first_cluster: Cluster,
-        file_len: usize,
-    ) -> Self {
+    pub fn new(volume: &mut FatVolume<BD>, dir_entry: DirEntry) -> Self {
+        let first_cluster = dir_entry.first_cluster().clone();
+        let file_size = dir_entry.file_size() as usize;
         Self {
-            fat_number,
-            first_cluster,
-            sectors: first_cluster.all_sectors(fat_number, sectors_per_cluster),
-            read_cache: BlockByteCache::new(Some(file_len)),
+            dir_entry,
+            sectors: volume.all_sectors(first_cluster),
+            read_cache: BlockByteCache::new(Some(file_size)),
             _block_device: PhantomData {},
         }
     }
 
-    pub fn reset(&mut self, sectors_per_cluster: BlockCount) {
-        self.sectors = self
-            .first_cluster
-            .all_sectors(self.fat_number, sectors_per_cluster);
+    pub fn reset(&mut self, volume: &mut FatVolume<BD>) {
+        self.sectors = volume.all_sectors(self.dir_entry.first_cluster().clone());
         self.read_cache.clear();
     }
 

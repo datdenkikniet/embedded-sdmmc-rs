@@ -12,20 +12,45 @@ pub enum DirEntryError {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ShortName {
+pub struct ShortNameRaw {
     main_name: [u8; 8],
     extension: [u8; 3],
 }
 
-impl ShortName {
-    pub fn main_name(&self) -> &str {
-        unsafe { core::str::from_utf8_unchecked(&self.main_name) }
+impl ShortNameRaw {
+    pub unsafe fn main_name_str(&self) -> &str {
+        let mut name = &self.main_name[..];
+        while name.len() > 0 && name[name.len() - 1] == 0x20 {
+            name = &name[..name.len() - 1];
+        }
+
+        core::str::from_utf8_unchecked(name)
+    }
+
+    pub unsafe fn extension_str(&self) -> &str {
+        let mut name = &self.extension[..];
+        while name.len() > 0 && name[name.len() - 1] == 0x20 {
+            name = &name[..name.len() - 1];
+        }
+        core::str::from_utf8_unchecked(name)
+    }
+
+    pub fn main_name(&self) -> &[u8; 8] {
+        &self.main_name
+    }
+
+    pub fn extension(&self) -> &[u8; 3] {
+        &self.extension
+    }
+
+    pub fn is_free(&self) -> bool {
+        self.main_name[0] == 0x00 || self.main_name[0] == 0xE5 || self.main_name[0] == 0x05
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct DirEntry {
-    name: ShortName,
+    name: ShortNameRaw,
     attributes: Attributes,
     file_size: u32,
     first_cluster: Cluster,
@@ -52,7 +77,7 @@ impl DirEntry {
         };
 
         Ok(Self {
-            name: ShortName {
+            name: ShortNameRaw {
                 main_name: name[0..8].try_into().expect("Infallible"),
                 extension: name[8..11].try_into().expect("Infallible"),
             },
@@ -62,13 +87,25 @@ impl DirEntry {
         })
     }
 
-    pub fn name(&self) -> &ShortName {
+    pub fn name(&self) -> &ShortNameRaw {
         &self.name
+    }
+
+    pub fn attributes(&self) -> &Attributes {
+        &self.attributes
+    }
+
+    pub fn file_size(&self) -> u32 {
+        self.file_size
+    }
+
+    pub fn first_cluster(&self) -> &Cluster {
+        &self.first_cluster
     }
 
     pub(crate) fn get_free_status(&self) -> (bool, bool) {
         let first_name_char = self.name.main_name[0];
-        (first_name_char == 0xE5, first_name_char == 0x00)
+        (self.name.is_free(), first_name_char == 0x00)
     }
 }
 
@@ -105,7 +142,7 @@ impl<'a> DirEntryRaw<'a> {
 pub struct DirIter<'a, BD, Iter>
 where
     BD: BlockDevice,
-    Iter: SectorIter,
+    Iter: SectorIter<BD>,
 {
     volume: &'a mut FatVolume<BD>,
     sectors: Iter,
@@ -117,7 +154,7 @@ where
 impl<'a, BD, Iter> core::fmt::Debug for DirIter<'a, BD, Iter>
 where
     BD: BlockDevice,
-    Iter: SectorIter + core::fmt::Debug,
+    Iter: SectorIter<BD> + core::fmt::Debug,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FileIter")
@@ -129,7 +166,7 @@ where
 impl<'a, BD, Iter> DirIter<'a, BD, Iter>
 where
     BD: BlockDevice,
-    Iter: SectorIter,
+    Iter: SectorIter<BD>,
 {
     pub fn new(volume: &'a mut FatVolume<BD>, sectors: Iter) -> Self {
         Self {
@@ -149,7 +186,7 @@ where
 impl<'a, BD, Iter> Iterator for DirIter<'a, BD, Iter>
 where
     BD: BlockDevice,
-    Iter: SectorIter,
+    Iter: SectorIter<BD>,
 {
     type Item = DirEntry;
 

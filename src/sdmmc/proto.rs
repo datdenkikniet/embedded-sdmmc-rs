@@ -243,6 +243,8 @@ pub fn crc16(data: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod test {
+    use hex_literal::hex;
+
     use super::*;
 
     #[test]

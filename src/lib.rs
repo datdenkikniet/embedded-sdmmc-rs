@@ -72,8 +72,7 @@
 // ****************************************************************************
 
 #[cfg(test)]
-#[macro_use]
-extern crate hex_literal;
+mod test;
 
 #[cfg(feature = "defmt-log")]
 use defmt::debug;
