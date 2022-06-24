@@ -147,8 +147,6 @@ impl BiosParameterBlock {
             sectors_per_cluster,
         };
 
-        me.fat_info = me.compute_fat_type(&raw)?;
-
         let verification_error = Self::verify_signature(raw.signature_word())
             .or(me.verify_root_entry_count())
             .or(me.verify_total_sector_count(&raw))
@@ -182,7 +180,8 @@ impl BiosParameterBlock {
     }
 
     pub fn compute_root_dir_sectors(root_entry_count: u32, bytes_per_sector: u32) -> u32 {
-        let root_dir_sectors = (root_entry_count + (bytes_per_sector - 1)) / bytes_per_sector;
+        let root_dir_sectors =
+            ((root_entry_count * 32) + (bytes_per_sector - 1)) / bytes_per_sector;
         root_dir_sectors
     }
 
@@ -211,7 +210,9 @@ impl BiosParameterBlock {
     }
 
     pub fn data_start(&self) -> BlockIdx {
-        self.root_start() + self.root_len()
+        let start = self.root_start() + self.root_len();
+        panic!("Data start: {:?}", start);
+        start
     }
 
     pub fn root_sectors(&self) -> RootDirectorySectors {
@@ -230,7 +231,10 @@ impl BiosParameterBlock {
 
     fn root_len(&self) -> BlockCount {
         match self.fat_info {
-            FatInfo::Fat16 => BlockCount(self.root_entry_count as u32 * 32),
+            FatInfo::Fat16 => BlockCount(Self::compute_root_dir_sectors(
+                self.root_entry_count as u32,
+                self.bytes_per_sector.get() as u32,
+            )),
             FatInfo::Fat32(_) => BlockCount(0),
         }
     }

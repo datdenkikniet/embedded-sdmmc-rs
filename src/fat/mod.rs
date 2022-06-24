@@ -260,8 +260,6 @@ where
     BD: BlockDevice,
 {
     dir_entry: DirEntry,
-    sectors: ClusterIterator,
-    read_cache: BlockByteCache,
     _block_device: PhantomData<BD>,
 }
 
@@ -270,10 +268,7 @@ where
     BD: BlockDevice,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("File")
-            .field("sectors", &self.sectors)
-            .field("read_cache", &self.read_cache)
-            .finish()
+        f.debug_struct("File").finish()
     }
 }
 
@@ -281,20 +276,11 @@ impl<BD> File<BD>
 where
     BD: BlockDevice,
 {
-    pub fn new(volume: &mut FatVolume<BD>, dir_entry: DirEntry) -> Self {
-        let first_cluster = dir_entry.first_cluster().clone();
-        let file_size = dir_entry.file_size() as usize;
+    pub fn new(dir_entry: DirEntry) -> Self {
         Self {
             dir_entry,
-            sectors: volume.all_sectors(first_cluster),
-            read_cache: BlockByteCache::new(Some(file_size)),
             _block_device: PhantomData {},
         }
-    }
-
-    pub fn reset(&mut self, volume: &mut FatVolume<BD>) {
-        self.sectors = volume.all_sectors(self.dir_entry.first_cluster().clone());
-        self.read_cache.clear();
     }
 
     pub fn read_all(
@@ -304,18 +290,22 @@ where
     ) -> Result<usize, BD::Error> {
         let mut data = data;
         let mut read_bytes_total = 0;
+        let mut sectors = fat_volume.all_sectors(self.dir_entry.first_cluster().clone());
+        let mut read_cache = BlockByteCache::new(Some(self.dir_entry.file_size() as usize));
 
         while data.len() > 0 {
-            if self.read_cache.all_cached_bytes_read() {
-                let next_sector = self.sectors.next(fat_volume);
-
-                if let Some(next_sector) = next_sector {
-                    let block = fat_volume.block_device.read_block(next_sector)?;
-                    self.read_cache.feed(block);
+            if read_cache.all_cached_bytes_read() {
+                if let Some(next_sector) = sectors.next(fat_volume) {
+                    let block = fat_volume.block_device.read_block(next_sector).ok();
+                    if let Some(block) = block {
+                        read_cache.feed(block);
+                    }
+                } else {
+                    break;
                 }
             }
 
-            let read_bytes = self.read_cache.read(data);
+            let read_bytes = read_cache.read(data);
             data = &mut data[read_bytes..];
             read_bytes_total += read_bytes;
             if read_bytes == 0 {
