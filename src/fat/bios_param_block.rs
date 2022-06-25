@@ -15,9 +15,9 @@ struct Fat32Info {
     root_cluster: Cluster,
 }
 
-impl Into<FatType> for FatInfo {
-    fn into(self) -> FatType {
-        match self {
+impl From<FatInfo> for FatType {
+    fn from(other: FatInfo) -> FatType {
+        match other {
             FatInfo::Fat16 => FatType::Fat16,
             FatInfo::Fat32(_) => FatType::Fat32,
         }
@@ -150,9 +150,9 @@ impl BiosParameterBlock {
         me.fat_info = me.compute_fat_type(&raw)?;
 
         let verification_error = Self::verify_signature(raw.signature_word())
-            .or(me.verify_root_entry_count())
-            .or(me.verify_total_sector_count(&raw))
-            .or(me.verify_fat_size(&raw));
+            .or_else(|| me.verify_root_entry_count())
+            .or_else(|| me.verify_total_sector_count(&raw))
+            .or_else(|| me.verify_fat_size(&raw));
 
         if let Some(err) = verification_error {
             Err(err)
@@ -182,9 +182,7 @@ impl BiosParameterBlock {
     }
 
     pub fn compute_root_dir_sectors(root_entry_count: u32, bytes_per_sector: u32) -> u32 {
-        let root_dir_sectors =
-            ((root_entry_count * 32) + (bytes_per_sector - 1)) / bytes_per_sector;
-        root_dir_sectors
+        ((root_entry_count * 32) + (bytes_per_sector - 1)) / bytes_per_sector
     }
 
     pub fn cluster_count(&self) -> u32 {
@@ -246,19 +244,15 @@ impl BiosParameterBlock {
         num_fats: u32,
         root_dir_sectors: u32,
     ) -> u32 {
-        let data_sectors =
-            total_sector_count - (reserved_sectors + (num_fats * fat_size) + root_dir_sectors);
-
-        data_sectors
+        total_sector_count - (reserved_sectors + (num_fats * fat_size) + root_dir_sectors)
     }
     fn compute_cluster_count(data_sectors: u32, sectors_per_cluster: NonZeroU32) -> u32 {
-        let data_cluster_count = data_sectors / sectors_per_cluster.get();
-        data_cluster_count
+        data_sectors / sectors_per_cluster.get()
     }
 
     fn compute_fat_type(&self, raw: &BiosParameterBlockRaw) -> Result<FatInfo, BpbError> {
         if self.cluster_count < 4085 {
-            return Err(BpbError::Fat12NotSupported);
+            Err(BpbError::Fat12NotSupported)
         } else if self.cluster_count < 65525 {
             Ok(FatInfo::Fat16)
         } else {
@@ -299,7 +293,7 @@ impl BiosParameterBlock {
         match bytes_per_sec {
             // SAFTEY: bytes_per_sector is not 0
             512 | 1024 | 2048 | 4096 => Ok(unsafe { NonZeroU16::new_unchecked(bytes_per_sec) }),
-            _ => return Err(BpbError::InvalidBytesPerSector(bytes_per_sec)),
+            _ => Err(BpbError::InvalidBytesPerSector(bytes_per_sec)),
         }
     }
 
@@ -316,17 +310,17 @@ impl BiosParameterBlock {
     }
 
     fn verify_total_sector_count(&self, raw: &BiosParameterBlockRaw) -> Option<BpbError> {
-        let _16 = raw.tot_sec_16();
-        let _32 = raw.tot_sec_32();
+        let fs_16 = raw.tot_sec_16();
+        let fs_32 = raw.tot_sec_32();
 
-        if _16 == 0 && _32 == 0 {
+        if fs_16 == 0 && fs_32 == 0 {
             return Some(BpbError::BothSectorCountsZero);
         }
 
         match self.fat_info {
             FatInfo::Fat16 => None,
             FatInfo::Fat32(_) => {
-                if _16 == 0 {
+                if fs_16 == 0 {
                     None
                 } else {
                     Some(BpbError::Fat32(Fat32BpbError::Count16NotZero))
@@ -358,13 +352,13 @@ impl BiosParameterBlock {
     }
 
     fn verify_fat_size(&self, raw: &BiosParameterBlockRaw) -> Option<BpbError> {
-        let _16 = raw.fat_sz_16();
-        let _32 = raw.fat_sz_32();
+        let fs_16 = raw.fat_sz_16();
+        let _fs_32 = raw.fat_sz_32();
 
         match self.fat_info {
             FatInfo::Fat16 => None,
             FatInfo::Fat32(_) => {
-                if _16 == 0 {
+                if fs_16 == 0 {
                     None
                 } else {
                     Some(BpbError::Fat32(Fat32BpbError::FatSize16NotZero))
@@ -375,7 +369,7 @@ impl BiosParameterBlock {
 
     // This procedure is the same for all FATs
     fn verify_signature(signature: [u8; 2]) -> Option<BpbError> {
-        if signature == &Self::SIGNATURE[..] {
+        if signature == Self::SIGNATURE[..] {
             None
         } else {
             Some(BpbError::InvalidSignature(signature))

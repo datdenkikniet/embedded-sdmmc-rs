@@ -1,4 +1,4 @@
-use crate::{blockdevice::BlockIter, BlockCount, BlockDevice, BlockIdx};
+use crate::{block_device::BlockIter, BlockCount, BlockDevice, BlockIdx};
 
 use super::{FatVolume, SectorIter};
 
@@ -48,7 +48,7 @@ where
 {
     fn next(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx> {
         if let Some(next_sector) = self.current_cluster_sectors.next() {
-            return Some(next_sector);
+            Some(next_sector)
         } else {
             self.current_cluster = volume
                 .find_next_cluster(self.fat_number, &self.current_cluster)

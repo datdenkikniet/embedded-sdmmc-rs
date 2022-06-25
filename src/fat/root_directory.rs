@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::{blockdevice::BlockIter, BlockCount, BlockDevice, BlockIdx};
+use crate::{block_device::BlockIter, BlockCount, BlockDevice, BlockIdx};
 
 use super::{cluster::ClusterSectorIterator, Cluster, FatVolume, SectorIter};
 
@@ -18,7 +18,7 @@ impl RootDirectorySectors {
     where
         BD: BlockDevice,
     {
-        RootDirIter::new(fat_volume, self.clone())
+        RootDirIter::new(fat_volume, *self)
     }
 }
 

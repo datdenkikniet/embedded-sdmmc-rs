@@ -1,5 +1,3 @@
-use core::marker::PhantomData;
-
 use crate::BlockDevice;
 
 use super::{
@@ -13,36 +11,6 @@ pub(crate) enum OpenMode {
     ReadOnly,
 }
 
-pub struct FileHandle<BD>
-where
-    BD: BlockDevice,
-{
-    id: u32,
-    mode: OpenMode,
-    _block_device: PhantomData<FatVolume<BD>>,
-}
-
-impl<BD> FileHandle<BD>
-where
-    BD: BlockDevice,
-{
-    pub(crate) fn new(id: u32, mode: OpenMode) -> Self {
-        Self {
-            id,
-            mode,
-            _block_device: Default::default(),
-        }
-    }
-
-    pub(crate) fn copy(&self) -> Self {
-        Self {
-            id: self.id,
-            mode: self.mode,
-            _block_device: Default::default(),
-        }
-    }
-}
-
 pub enum FileError<E> {
     DeviceError(E),
 }
@@ -52,6 +20,7 @@ where
     BD: BlockDevice,
 {
     read_cache: BlockByteCache<BD, ClusterSectorIterator>,
+    mode: OpenMode,
     dir_entry: DirEntry<BD>,
 }
 
@@ -70,38 +39,83 @@ where
 {
     pub const EMPTY: Option<Self> = None;
 
-    pub fn new(dir_entry: DirEntry<BD>, volume: &mut FatVolume<BD>) -> Option<Self> {
+    pub(crate) fn open_dir_entry(
+        dir_entry: DirEntry<BD>,
+        volume: &mut FatVolume<BD>,
+        mode: OpenMode,
+    ) -> Option<Self> {
         if !dir_entry.is_dir() {
             let file_size = dir_entry.file_size() as usize;
-            let sectors = volume.all_sectors(dir_entry.first_cluster().clone());
+            let sectors = volume.all_sectors(*dir_entry.first_cluster());
             Some(Self {
                 dir_entry,
                 read_cache: BlockByteCache::new(Some(file_size), sectors),
+                mode,
             })
         } else {
             None
         }
     }
 
-    pub(crate) fn reset(&mut self, volume: &mut FatVolume<BD>) {
+    pub fn reset(&mut self, volume: &mut FatVolume<BD>) {
         self.read_cache
-            .reset(volume.all_sectors(self.dir_entry.first_cluster().clone()));
+            .reset(volume.all_sectors(*self.dir_entry.first_cluster()));
     }
 
-    pub(crate) fn read(
-        &mut self,
-        fat_volume: &mut FatVolume<BD>,
-        data: &mut [u8],
-    ) -> Result<usize, BD::Error> {
+    pub fn dir_entry(&self) -> &DirEntry<BD> {
+        &self.dir_entry
+    }
+
+    pub fn activate<'file, 'volume>(
+        &'file mut self,
+        volume: &'volume mut FatVolume<BD>,
+    ) -> ActiveFile<'file, 'volume, BD> {
+        ActiveFile { file: self, volume }
+    }
+}
+
+#[cfg(feature = "improper_deref_impl")]
+impl<BD> core::ops::Deref for File<BD>
+where
+    BD: BlockDevice,
+{
+    type Target = DirEntry<BD>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dir_entry
+    }
+}
+
+pub struct ActiveFile<'file, 'volume, BD>
+where
+    BD: BlockDevice,
+{
+    file: &'file mut File<BD>,
+    volume: &'volume mut FatVolume<BD>,
+}
+
+impl<'file, 'volume, BD> ActiveFile<'file, 'volume, BD>
+where
+    BD: BlockDevice,
+{
+    pub fn file(&self) -> &File<BD> {
+        self.file
+    }
+
+    pub fn reset(&mut self) {
+        self.file.reset(self.volume)
+    }
+
+    pub fn read(&mut self, data: &mut [u8]) -> Result<usize, BD::Error> {
         let mut data = data;
         let mut read_bytes_total = 0;
 
-        while data.len() > 0 {
-            if !self.read_cache.more_data(fat_volume) {
+        while !data.is_empty() {
+            if !self.file.read_cache.more_data(self.volume) {
                 break;
             }
 
-            let read_bytes = self.read_cache.read(data);
+            let read_bytes = self.file.read_cache.read(data);
             data = &mut data[read_bytes..];
             read_bytes_total += read_bytes;
             if read_bytes == 0 {
@@ -111,8 +125,16 @@ where
 
         Ok(read_bytes_total)
     }
+}
 
-    pub fn dir_entry(&self) -> &DirEntry<BD> {
-        &self.dir_entry
+#[cfg(feature = "improper_deref_impl")]
+impl<BD> core::ops::Deref for ActiveFile<'_, '_, BD>
+where
+    BD: BlockDevice,
+{
+    type Target = File<BD>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.file
     }
 }

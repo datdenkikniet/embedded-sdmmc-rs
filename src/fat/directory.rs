@@ -41,18 +41,22 @@ pub struct ShortNameRaw {
 }
 
 impl ShortNameRaw {
+    /// # Safety
+    /// `self.main_name` must contain valid UTF-8
     pub unsafe fn main_name_str(&self) -> &str {
         let mut name = &self.main_name[..];
-        while name.len() > 0 && name[name.len() - 1] == 0x20 {
+        while !name.is_empty() && name[name.len() - 1] == 0x20 {
             name = &name[..name.len() - 1];
         }
 
         core::str::from_utf8_unchecked(name)
     }
 
+    /// # Safety
+    /// `self.extension` must contain valid UTF-8
     pub unsafe fn extension_str(&self) -> &str {
         let mut name = &self.extension[..];
-        while name.len() > 0 && name[name.len() - 1] == 0x20 {
+        while !name.is_empty() && name[name.len() - 1] == 0x20 {
             name = &name[..name.len() - 1];
         }
         core::str::from_utf8_unchecked(name)
@@ -71,7 +75,7 @@ impl ShortNameRaw {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DirEntry<BD>
 where
     BD: BlockDevice,
@@ -89,6 +93,21 @@ where
 {
     fn eq(&self, other: &DirEntry<BD>) -> bool {
         self.first_cluster == other.first_cluster
+    }
+}
+
+impl<BD> Clone for DirEntry<BD>
+where
+    BD: BlockDevice,
+{
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name,
+            attributes: self.attributes,
+            file_size: self.file_size,
+            first_cluster: self.first_cluster,
+            _block_device: Default::default(),
+        }
     }
 }
 
@@ -176,7 +195,7 @@ impl<'a> DirEntryRaw<'a> {
     }
 
     fn data(&self) -> &[u8] {
-        &self.data
+        self.data
     }
 
     pub fn name(&self) -> [u8; 11] {
@@ -239,7 +258,7 @@ where
 
 impl<'a, BD, Iter> Iterator for DirIter<'a, BD, Iter>
 where
-    BD: BlockDevice + core::fmt::Debug,
+    BD: BlockDevice,
     Iter: SectorIter<BD>,
 {
     type Item = DirEntry<BD>;

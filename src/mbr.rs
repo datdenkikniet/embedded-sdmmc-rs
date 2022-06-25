@@ -126,9 +126,9 @@ where
         let last_block = start + len;
 
         if last_block > self.info.block_count.0 {
-            return Err(PartitionError::OutOfRange {
+            Err(PartitionError::OutOfRange {
                 partition_block_count: self.info.block_count,
-            });
+            })
         } else {
             Ok(())
         }
@@ -154,7 +154,7 @@ where
 
         self.block_device
             .read(blocks, part_start_block_idx, reason)
-            .map_err(|e| PartitionError::DeviceError(e))
+            .map_err(PartitionError::DeviceError)
     }
 
     fn write(&mut self, blocks: &[Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
@@ -165,7 +165,7 @@ where
 
         self.block_device
             .write(blocks, part_start_block_idx)
-            .map_err(|e| PartitionError::DeviceError(e))
+            .map_err(PartitionError::DeviceError)
     }
 
     fn num_blocks(&mut self) -> Result<BlockCount, Self::Error> {
@@ -367,7 +367,7 @@ where
     fn clone(&self) -> Self {
         Self {
             block_dev: self.block_dev.clone(),
-            partitions: self.partitions.clone(),
+            partitions: self.partitions,
         }
     }
 }

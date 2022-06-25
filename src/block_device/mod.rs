@@ -85,10 +85,10 @@ impl<'a> BlockDevice for MemoryBlockDevice<'a> {
         start_block_idx: BlockIdx,
         _reason: &str,
     ) -> Result<(), Self::Error> {
-        for idx in 0..blocks.len() {
+        for (idx, block) in blocks.iter_mut().enumerate() {
             let blk_start = Self::block_start(start_block_idx.0 as usize + idx);
             let blk_end = Self::block_end(start_block_idx.0 as usize + idx);
-            blocks[idx]
+            block
                 .contents
                 .copy_from_slice(&self.memory[blk_start..blk_end])
         }
@@ -97,10 +97,10 @@ impl<'a> BlockDevice for MemoryBlockDevice<'a> {
     }
 
     fn write(&mut self, blocks: &[Block], start_block_idx: BlockIdx) -> Result<(), Self::Error> {
-        for idx in 0..blocks.len() {
+        for (idx, block) in blocks.iter().enumerate() {
             let blk_start = Self::block_start(start_block_idx.0 as usize + idx);
             let blk_end = Self::block_end(start_block_idx.0 as usize + idx);
-            self.memory[blk_start..blk_end].copy_from_slice(&blocks[idx].contents);
+            self.memory[blk_start..blk_end].copy_from_slice(&block.contents);
         }
         Ok(())
     }

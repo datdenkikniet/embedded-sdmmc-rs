@@ -6,7 +6,7 @@ use self::{
     bios_param_block::{BiosParameterBlock, BpbError},
     cluster::{Cluster, ClusterSectorIterator},
     directory::{DirEntry, DirIter},
-    file::{File, FileHandle, OpenMode},
+    file::{File, OpenMode},
     root_directory::RootDirIter,
 };
 
@@ -62,8 +62,7 @@ where
 {
     bpb: BiosParameterBlock,
     block_device: BD,
-    file_handle_num: u32,
-    open_files: [Option<(FileHandle<BD>, File<BD>)>; MAX_FILES],
+    open_entries: [Option<DirEntry<BD>>; MAX_FILES],
 }
 
 impl<BD> core::fmt::Debug for FatVolume<BD>
@@ -79,20 +78,19 @@ impl<BD> FatVolume<BD>
 where
     BD: BlockDevice,
 {
-    const EMPTY_FILE_HANDLE: Option<(FileHandle<BD>, File<BD>)> = None;
+    const EMPTY_FILE_HANDLE: Option<DirEntry<BD>> = None;
 
     pub fn new(mut block_device: BD) -> Result<Self, FatError<BD::Error>> {
         let bpb_block = block_device
             .read_block(BlockIdx(0))
-            .map_err(|e| FatError::DeviceError(e))?;
+            .map_err(FatError::DeviceError)?;
 
         let bpb = BiosParameterBlock::new(bpb_block)?;
 
         Ok(Self {
             bpb,
             block_device,
-            file_handle_num: 0,
-            open_files: [Self::EMPTY_FILE_HANDLE; MAX_FILES],
+            open_entries: [Self::EMPTY_FILE_HANDLE; MAX_FILES],
         })
     }
 
@@ -108,46 +106,37 @@ where
         self.bpb.fat_type()
     }
 
-    pub fn open_file(&mut self, dir_entry: DirEntry<BD>) -> Result<FileHandle<BD>, ()> {
-        if !dir_entry.is_dir() {
-            let entry_is_open = self
-                .open_files
-                .iter()
-                .find(|open_file_entry| {
-                    if let Some((_, file)) = open_file_entry {
-                        file.dir_entry() == &dir_entry
-                    } else {
-                        false
-                    }
-                })
-                .is_some();
-
-            if entry_is_open {
-                return Err(());
+    pub fn open_file(&mut self, dir_entry: DirEntry<BD>) -> Result<File<BD>, ()> {
+        let entry_is_open = self.open_entries.iter().any(|open_file_entry| {
+            if let Some(open_entry) = open_file_entry {
+                open_entry == &dir_entry
+            } else {
+                false
             }
+        });
 
-            let handle_num = self.next_file_handle();
-            let handle = FileHandle::new(handle_num, OpenMode::ReadOnly);
-            let file = if let Some(file) = File::new(dir_entry, self) {
+        if entry_is_open {
+            return Err(());
+        }
+
+        let file =
+            if let Some(file) = File::open_dir_entry(dir_entry.clone(), self, OpenMode::ReadOnly) {
                 file
             } else {
                 return Err(());
             };
 
-            let open_entry = self.open_files.iter_mut().find(|f| f.is_none());
+        let empty_entry = self.open_entries.iter_mut().find(|f| f.is_none());
 
-            if let Some(entry) = open_entry {
-                *entry = Some((handle.copy(), file));
-                Ok(handle)
-            } else {
-                Err(())
-            }
+        if let Some(entry) = empty_entry {
+            *entry = Some(dir_entry);
+            Ok(file)
         } else {
             Err(())
         }
     }
 
-    pub fn root_directory_iter<'a>(&'a mut self) -> DirIter<'a, BD, RootDirIter<BD>> {
+    pub fn root_directory_iter(&mut self) -> DirIter<BD, RootDirIter<BD>> {
         let root_sectors = self.bpb().root_sectors();
         let iter = root_sectors.iter(self);
         DirIter::new(self, iter)
@@ -175,7 +164,7 @@ where
             BlockIdx((fat_number * self.bpb.fat_size().0) + entry_sector.0)
         };
 
-        let sector = self.block_device.read_block(sector.into())?;
+        let sector = self.block_device.read_block(sector)?;
 
         let entry_value = match self.bpb.fat_type() {
             FatType::Fat16 => u16::from_le_bytes(
@@ -217,11 +206,6 @@ where
             cluster,
             self.bpb.sectors_per_cluster(),
         )
-    }
-
-    fn next_file_handle(&mut self) -> u32 {
-        self.file_handle_num = self.file_handle_num.wrapping_add(1);
-        self.file_handle_num
     }
 }
 

@@ -275,8 +275,7 @@ where
         F: FnOnce(&mut SdMmcSpiBusy<SPI, CS, DELAY>) -> Result<R, Error>,
     {
         let mut busy = SdMmcSpiBusy::new(&mut self.spi, &mut self.cs, &mut self.delay)?;
-        let result = f(&mut busy);
-        result
+        f(&mut busy)
     }
 
     /// Read the 'card specific data' block.

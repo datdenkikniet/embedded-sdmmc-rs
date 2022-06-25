@@ -19,7 +19,7 @@ macro_rules! test_dir_entry {
 
 fn test_subdir<BD>(volume: &mut FatVolume<BD>)
 where
-    BD: BlockDevice + std::fmt::Debug,
+    BD: BlockDevice,
 {
     let test_dir = volume
         .root_directory_iter()
@@ -40,6 +40,25 @@ where
         "TEST"
     );
     assert!(subdir_iter.next().is_none());
+}
+
+fn test_64mb<BD>(volume: &mut FatVolume<BD>)
+where
+    BD: BlockDevice,
+{
+    let file = volume
+        .root_directory_iter()
+        .find(|f| unsafe { f.name().main_name_str() } == "64MB")
+        .unwrap();
+
+    let mut data = vec![0; file.file_size() as usize + 1024];
+
+    let mut file = volume.open_file(file).unwrap();
+    let mut file = file.activate(volume);
+
+    let read_bytes = file.read(&mut data).unwrap();
+
+    assert_eq!(read_bytes, file.file().dir_entry().file_size() as usize);
 }
 
 #[test]
@@ -80,6 +99,7 @@ fn read_disk_file() {
     assert!(f16_iter.next().is_none());
 
     test_subdir(&mut fat16_volume);
+    test_64mb(&mut fat16_volume);
 
     let second_partition = mbr.open_partition(PartitionNumber::Two).unwrap();
     let mut fat32_volume = FatVolume::new(second_partition).unwrap();
@@ -93,4 +113,5 @@ fn read_disk_file() {
     assert!(iter.next().is_none());
 
     test_subdir(&mut fat32_volume);
+    test_64mb(&mut fat32_volume);
 }

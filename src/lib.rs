@@ -80,13 +80,13 @@ use defmt::debug;
 #[macro_use]
 mod structure;
 
-mod blockdevice;
+pub mod block_device;
 pub mod mbr;
 pub mod sdmmc;
 
 pub mod fat;
 
-pub use crate::blockdevice::{Block, BlockCount, BlockDevice, BlockIdx, MemoryBlockDevice};
+pub use crate::block_device::{Block, BlockCount, BlockDevice, BlockIdx, MemoryBlockDevice};
 pub use crate::sdmmc::Error as SdMmcError;
 pub use crate::sdmmc::SdMmcSpi;
 
