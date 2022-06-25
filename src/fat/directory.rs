@@ -39,35 +39,45 @@ pub use lfn::LongNameRaw;
 
 #[cfg(feature = "lfn")]
 pub mod lfn {
+
+    pub struct LongNameCharIter<'a> {
+        idx: usize,
+        len: usize,
+        long_name: &'a LongNameRaw,
+    }
+
+    impl Iterator for LongNameCharIter<'_> {
+        type Item = char;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let data = &self.long_name.long_name_data[..self.len];
+            let value = data.get(self.idx)?;
+            self.idx += 1;
+            char::from_u32(*value as u32)
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub struct LongNameRaw {
         pub(super) long_name_data: [u16; 256],
     }
 
-    #[cfg(feature = "lfn")]
     impl LongNameRaw {
         pub fn data(&self) -> &[u16] {
             &self.long_name_data[..]
         }
 
-        pub fn chars(&self) -> Option<[char; 256]> {
-            let mut data = ['\0'; 256];
-            for (idx, value) in self
-                .long_name_data
-                .iter()
-                .map(|v| *v as u32)
-                .map(char::from_u32)
-                .enumerate()
-            {
-                data[idx] = value?;
+        pub fn chars(&self) -> LongNameCharIter {
+            LongNameCharIter {
+                idx: 0,
+                len: self.len(),
+                long_name: self,
             }
-            Some(data)
         }
 
         pub fn to_str<'a>(&self, data: &'a mut [u8]) -> Option<&'a str> {
-            let chars = self.chars()?;
             let mut char_idx = 0;
-            for char in chars[..self.len()].iter() {
+            for char in self.chars() {
                 let len = char.len_utf8();
                 if data.len() - char_idx > len {
                     char.encode_utf8(&mut data[char_idx..char_idx + len]);
