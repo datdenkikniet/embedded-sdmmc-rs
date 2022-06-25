@@ -34,6 +34,40 @@ pub enum DirEntryError {
     Fat16FistClusHiNotZero,
 }
 
+#[derive(Debug, Clone)]
+pub struct LongNameRaw {
+    long_name_data: [u16; 256],
+}
+
+impl LongNameRaw {
+    pub fn data(&self) -> &[u16] {
+        &self.long_name_data[..]
+    }
+
+    pub fn chars(&self) -> [char; 256] {
+        let mut data = ['\0'; 256];
+        for (idx, value) in self
+            .long_name_data
+            .iter()
+            .map(|v| *v as u32)
+            .map(char::from_u32)
+            .map(|c| c.unwrap())
+            .enumerate()
+        {
+            data[idx] = value
+        }
+        data
+    }
+
+    pub fn len(&self) -> usize {
+        self.long_name_data
+            .iter()
+            .enumerate()
+            .find_map(|(idx, v)| if *v == 0 { Some(idx) } else { None })
+            .unwrap_or(self.long_name_data.len())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ShortNameRaw {
     main_name: [u8; 8],
@@ -81,6 +115,7 @@ where
     BD: BlockDevice,
 {
     name: ShortNameRaw,
+    long_name: LongNameRaw,
     attributes: Attributes,
     file_size: u32,
     first_cluster: Cluster,
@@ -102,7 +137,8 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            name: self.name,
+            name: self.name.clone(),
+            long_name: self.long_name.clone(),
             attributes: self.attributes,
             file_size: self.file_size,
             first_cluster: self.first_cluster,
@@ -115,9 +151,18 @@ impl<BD> DirEntry<BD>
 where
     BD: BlockDevice,
 {
-    pub fn new(raw: &DirEntryRaw, fat_type: FatType) -> Result<Self, DirEntryError> {
+    pub fn new(
+        long_name: LongNameRaw,
+        raw: &DirEntryRaw,
+        fat_type: FatType,
+    ) -> Result<Self, DirEntryError> {
         let name = raw.name();
         let attributes = Attributes::from_bits_truncate(raw.attr());
+
+        let short_name = ShortNameRaw {
+            main_name: name[0..8].try_into().expect("Infallible"),
+            extension: name[8..11].try_into().expect("Infallible"),
+        };
 
         let file_size = raw.file_size();
 
@@ -135,10 +180,8 @@ where
         };
 
         Ok(Self {
-            name: ShortNameRaw {
-                main_name: name[0..8].try_into().expect("Infallible"),
-                extension: name[8..11].try_into().expect("Infallible"),
-            },
+            name: short_name,
+            long_name,
             attributes,
             file_size,
             first_cluster,
@@ -146,7 +189,7 @@ where
         })
     }
 
-    pub fn name(&self) -> &ShortNameRaw {
+    pub fn short_name(&self) -> &ShortNameRaw {
         &self.name
     }
 
@@ -179,8 +222,12 @@ where
     }
 
     pub(crate) fn get_free_status(&self) -> (bool, bool) {
-        let first_name_char = self.name.main_name[0];
-        (self.name.is_free(), first_name_char == 0x00)
+        let first_name_char = self.short_name().main_name[0];
+        (self.short_name().is_free(), first_name_char == 0x00)
+    }
+
+    pub fn long_name(&self) -> &LongNameRaw {
+        &self.long_name
     }
 }
 
@@ -190,6 +237,8 @@ pub struct DirEntryRaw<'a> {
 }
 
 impl<'a> DirEntryRaw<'a> {
+    pub const LFN_ENTRY_LEN: usize = (5 + 6 + 2);
+
     pub fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
@@ -212,6 +261,49 @@ impl<'a> DirEntryRaw<'a> {
     define_field!(wrt_date, u16, 24);
     define_field!(fst_clus_lo, u16, 26);
     define_field!(file_size, u32, 28);
+
+    pub fn is_long_name(&self) -> bool {
+        Attributes::from_bits_truncate(self.attr()).is_long_name()
+    }
+
+    // The following items are only valid for LFN entries
+    define_field!(ldir_ord, u8, 0);
+    pub fn ldir_name1(&self) -> [u16; 5] {
+        let mut data = [0u16; 5];
+        for idx in 0..5 {
+            data[idx] = u16::from_le_bytes(
+                self.data[1 + (idx * 2)..1 + ((idx + 1) * 2)]
+                    .try_into()
+                    .expect("Infallible"),
+            );
+        }
+        data
+    }
+    define_field!(ldir_type, u8, 12);
+    define_field!(ldir_chksum, u8, 13);
+    pub fn ldir_name2(&self) -> [u16; 6] {
+        let mut data = [0u16; 6];
+        for idx in 0..6 {
+            data[idx] = u16::from_le_bytes(
+                self.data[14 + (idx * 2)..14 + ((idx + 1) * 2)]
+                    .try_into()
+                    .expect("Infallible"),
+            );
+        }
+        data
+    }
+    define_field!(ldir_fst_clus_lo, u16, 26);
+    pub fn ldir_name3(&self) -> [u16; 2] {
+        let mut data = [0u16; 2];
+        for idx in 0..2 {
+            data[idx] = u16::from_le_bytes(
+                self.data[28 + (idx * 2)..28 + ((idx + 1) * 2)]
+                    .try_into()
+                    .expect("Infallible"),
+            );
+        }
+        data
+    }
 }
 
 pub struct DirIter<'a, BD, Iter>
@@ -264,30 +356,76 @@ where
     type Item = DirEntry<BD>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let Self {
+            block_cache,
+            buffer,
+            volume,
+            total_entries_read,
+            ..
+        } = self;
+
+        let mut long_name_data = None;
+
         loop {
-            if !self.block_cache.more_data(self.volume) {
+            if !block_cache.more_data(volume) {
                 break None;
             }
-
-            let Self {
-                block_cache,
-                buffer,
-                volume,
-                total_entries_read,
-                ..
-            } = self;
 
             if block_cache.read(buffer) == 32 {
                 *total_entries_read += 1;
                 let raw_dir_entry = DirEntryRaw::new(&buffer[..]);
-                let dir_entry = DirEntry::new(&raw_dir_entry, volume.bpb.fat_type()).ok()?;
-                let (this_entry_free, all_following_free) = dir_entry.get_free_status();
-                if all_following_free {
-                    break None;
-                } else if this_entry_free {
-                    continue;
+
+                if raw_dir_entry.is_long_name() {
+                    // TODO: handle "bad" long name entries
+                    let mut ord = raw_dir_entry.ldir_ord();
+                    let is_last_entry = (ord & 0x40) == 0x40;
+                    ord &= !0x40;
+                    ord = ord.wrapping_sub(1);
+
+                    if is_last_entry {
+                        long_name_data = Some(LongNameRaw {
+                            long_name_data: [0u16; 256],
+                        });
+                    }
+
+                    if let Some(long_entry_data) = &mut long_name_data {
+                        let d1 = raw_dir_entry.ldir_name1();
+                        let d2 = raw_dir_entry.ldir_name2();
+                        let d3 = raw_dir_entry.ldir_name3();
+
+                        let start_index = DirEntryRaw::LFN_ENTRY_LEN * ord as usize;
+                        let end_index = start_index + DirEntryRaw::LFN_ENTRY_LEN;
+
+                        if end_index > 255 {
+                            // Faulty long name entry
+                            continue;
+                        }
+
+                        long_entry_data.long_name_data[start_index..start_index + 5]
+                            .copy_from_slice(&d1);
+                        long_entry_data.long_name_data[start_index + 5..start_index + (5 + 6)]
+                            .copy_from_slice(&d2);
+                        long_entry_data.long_name_data
+                            [start_index + (5 + 6)..start_index + (5 + 6 + 2)]
+                            .copy_from_slice(&d3);
+                    }
                 } else {
-                    return Some(dir_entry);
+                    let dir_entry = DirEntry::new(
+                        long_name_data.take().unwrap_or(LongNameRaw {
+                            long_name_data: [0u16; 256],
+                        }),
+                        &raw_dir_entry,
+                        volume.bpb.fat_type(),
+                    )
+                    .ok()?;
+                    let (this_entry_free, all_following_free) = dir_entry.get_free_status();
+                    if all_following_free {
+                        break None;
+                    } else if this_entry_free {
+                        continue;
+                    } else {
+                        return Some(dir_entry);
+                    }
                 }
             } else {
                 return None;

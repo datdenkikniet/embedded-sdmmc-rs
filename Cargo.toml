@@ -24,4 +24,5 @@ env_logger = "0.8"
 [features]
 defmt-log = [ "defmt" ]
 refcell-blockdevice = [ ]
-default = [ "log", "refcell-blockdevice" ]
+lfn = [ ]
+default = [ "log", "refcell-blockdevice", "lfn" ]

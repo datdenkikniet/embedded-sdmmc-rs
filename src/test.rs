@@ -8,8 +8,8 @@ macro_rules! test_dir_entry {
     ($iter:expr, $name:literal, $extension:literal, $attributes:expr, $file_size:literal, $first_cluster:literal) => {{
         let entry = $iter.next().expect("Expected another file to exist");
         unsafe {
-            assert_eq!(entry.name().main_name_str(), $name);
-            assert_eq!(entry.name().extension_str(), $extension);
+            assert_eq!(entry.short_name().main_name_str(), $name);
+            assert_eq!(entry.short_name().extension_str(), $extension);
         }
         assert_eq!(entry.attributes(), &$attributes);
         assert_eq!(entry.file_size(), $file_size);
@@ -19,26 +19,39 @@ macro_rules! test_dir_entry {
 
 fn test_subdir<BD>(volume: &mut FatVolume<BD>)
 where
-    BD: BlockDevice,
+    BD: BlockDevice + std::fmt::Debug,
 {
     let test_dir = volume
         .root_directory_iter()
-        .find(|f| unsafe { f.name().main_name_str() } == "TEST")
+        .find(|f| unsafe { f.short_name().main_name_str() } == "TEST")
         .unwrap();
 
     let mut subdir_iter = test_dir.iter_subdir(volume).unwrap();
     assert_eq!(
-        unsafe { subdir_iter.next().unwrap().name().main_name_str() },
+        unsafe { subdir_iter.next().unwrap().short_name().main_name_str() },
         "."
     );
     assert_eq!(
-        unsafe { subdir_iter.next().unwrap().name().main_name_str() },
+        unsafe { subdir_iter.next().unwrap().short_name().main_name_str() },
         ".."
     );
     assert_eq!(
-        unsafe { subdir_iter.next().unwrap().name().main_name_str() },
+        unsafe { subdir_iter.next().unwrap().short_name().main_name_str() },
         "TEST"
     );
+
+    let long_name_entry = subdir_iter.next().unwrap();
+    let long_name = long_name_entry.long_name();
+    let name_len = long_name.len();
+
+    assert_eq!(
+        &[
+            'a', ' ', 'f', 'i', 'l', 'e', ' ', 'w', 'i', 't', 'h', ' ', 'a', ' ', 'm', 'u', 'c',
+            'h', ' ', 'l', 'o', 'n', 'g', 'e', 'r', ' ', 'n', 'a', 'm', 'e'
+        ],
+        &long_name.chars()[..name_len]
+    );
+
     assert!(subdir_iter.next().is_none());
 }
 
@@ -48,7 +61,7 @@ where
 {
     let file = volume
         .root_directory_iter()
-        .find(|f| unsafe { f.name().main_name_str() } == "64MB")
+        .find(|f| unsafe { f.short_name().main_name_str() } == "64MB")
         .unwrap();
 
     let mut data = vec![0; file.file_size() as usize + 1024];
