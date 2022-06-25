@@ -26,7 +26,7 @@ pub struct ClusterSectorIterator {
 }
 
 impl ClusterSectorIterator {
-    pub fn new(
+    pub(crate) fn new(
         fat_number: u32,
         data_start: BlockIdx,
         start: Cluster,

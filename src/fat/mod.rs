@@ -4,9 +4,9 @@ use crate::{BlockDevice, BlockIdx};
 
 use self::{
     bios_param_block::{BiosParameterBlock, BpbError},
-    block_byte_cache::BlockByteCache,
     cluster::{Cluster, ClusterSectorIterator},
     directory::{DirEntry, DirIter},
+    file::{File, FileHandle, OpenMode},
     root_directory::RootDirIter,
 };
 
@@ -14,6 +14,7 @@ pub mod bios_param_block;
 pub mod block_byte_cache;
 pub mod cluster;
 pub mod directory;
+pub mod file;
 pub mod root_directory;
 
 pub trait SectorIter<BD>
@@ -53,12 +54,16 @@ where
     }
 }
 
+const MAX_FILES: usize = 8;
+
 pub struct FatVolume<BD>
 where
     BD: BlockDevice,
 {
     bpb: BiosParameterBlock,
     block_device: BD,
+    file_handle_num: u32,
+    open_files: [Option<(FileHandle<BD>, File<BD>)>; MAX_FILES],
 }
 
 impl<BD> core::fmt::Debug for FatVolume<BD>
@@ -74,6 +79,8 @@ impl<BD> FatVolume<BD>
 where
     BD: BlockDevice,
 {
+    const EMPTY_FILE_HANDLE: Option<(FileHandle<BD>, File<BD>)> = None;
+
     pub fn new(mut block_device: BD) -> Result<Self, FatError<BD::Error>> {
         let bpb_block = block_device
             .read_block(BlockIdx(0))
@@ -81,21 +88,72 @@ where
 
         let bpb = BiosParameterBlock::new(bpb_block)?;
 
-        Ok(Self { bpb, block_device })
+        Ok(Self {
+            bpb,
+            block_device,
+            file_handle_num: 0,
+            open_files: [Self::EMPTY_FILE_HANDLE; MAX_FILES],
+        })
+    }
+
+    pub fn release(self) -> BD {
+        self.block_device
+    }
+
+    pub fn bpb(&self) -> &BiosParameterBlock {
+        &self.bpb
     }
 
     pub fn fat_type(&self) -> FatType {
         self.bpb.fat_type()
     }
 
-    pub fn cluster_for_sector(&self, sector: BlockIdx) -> Cluster {
-        match self.bpb.fat_type() {
-            FatType::Fat16 => Cluster(sector.0 / 2),
-            FatType::Fat32 => Cluster(sector.0 / 4),
+    pub fn open_file(&mut self, dir_entry: DirEntry<BD>) -> Result<FileHandle<BD>, ()> {
+        if !dir_entry.is_dir() {
+            let entry_is_open = self
+                .open_files
+                .iter()
+                .find(|open_file_entry| {
+                    if let Some((_, file)) = open_file_entry {
+                        file.dir_entry() == &dir_entry
+                    } else {
+                        false
+                    }
+                })
+                .is_some();
+
+            if entry_is_open {
+                return Err(());
+            }
+
+            let handle_num = self.next_file_handle();
+            let handle = FileHandle::new(handle_num, OpenMode::ReadOnly);
+            let file = if let Some(file) = File::new(dir_entry, self) {
+                file
+            } else {
+                return Err(());
+            };
+
+            let open_entry = self.open_files.iter_mut().find(|f| f.is_none());
+
+            if let Some(entry) = open_entry {
+                *entry = Some((handle.copy(), file));
+                Ok(handle)
+            } else {
+                Err(())
+            }
+        } else {
+            Err(())
         }
     }
 
-    pub fn get_fat_entry(
+    pub fn root_directory_iter<'a>(&'a mut self) -> DirIter<'a, BD, RootDirIter<BD>> {
+        let root_sectors = self.bpb().root_sectors();
+        let iter = root_sectors.iter(self);
+        DirIter::new(self, iter)
+    }
+
+    pub(crate) fn get_fat_entry(
         &mut self,
         fat_number: u32,
         cluster: &Cluster,
@@ -138,7 +196,7 @@ where
         Ok(Entry(entry_value))
     }
 
-    pub fn find_next_cluster(
+    pub(crate) fn find_next_cluster(
         &mut self,
         fat_number: u32,
         current_cluster: &Cluster,
@@ -152,27 +210,18 @@ where
         }
     }
 
-    pub fn root_directory_iter<'a>(&'a mut self) -> DirIter<'a, BD, RootDirIter<BD>> {
-        let root_sectors = self.bpb().root_sectors();
-        let iter = root_sectors.iter(self);
-        DirIter::new(self, iter)
-    }
-
-    pub fn bpb(&self) -> &BiosParameterBlock {
-        &self.bpb
-    }
-
-    pub fn all_sectors(&mut self, cluster: Cluster) -> ClusterSectorIterator {
+    pub(crate) fn all_sectors(&mut self, cluster: Cluster) -> ClusterSectorIterator {
         ClusterSectorIterator::new(
             1,
             self.bpb.data_start(),
-            cluster.clone(),
+            cluster,
             self.bpb.sectors_per_cluster(),
         )
     }
 
-    pub fn release(self) -> BD {
-        self.block_device
+    fn next_file_handle(&mut self) -> u32 {
+        self.file_handle_num = self.file_handle_num.wrapping_add(1);
+        self.file_handle_num
     }
 }
 
@@ -222,71 +271,5 @@ impl Entry {
                         && self.0 <= Self::FAT32_RESERVED_RANGE_END)
             }
         }
-    }
-}
-
-pub enum FileError<E> {
-    DeviceError(E),
-}
-
-pub struct File<BD>
-where
-    BD: BlockDevice,
-{
-    dir_entry: DirEntry<BD>,
-}
-
-impl<BD> core::fmt::Debug for File<BD>
-where
-    BD: BlockDevice,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("File").finish()
-    }
-}
-
-impl<BD> File<BD>
-where
-    BD: BlockDevice,
-{
-    pub fn new(dir_entry: DirEntry<BD>) -> Option<Self> {
-        if !dir_entry.is_dir() {
-            Some(Self { dir_entry })
-        } else {
-            None
-        }
-    }
-
-    pub fn read_all(
-        &mut self,
-        fat_volume: &mut FatVolume<BD>,
-        data: &mut [u8],
-    ) -> Result<usize, BD::Error> {
-        let mut data = data;
-        let mut read_bytes_total = 0;
-        let mut sectors = fat_volume.all_sectors(self.dir_entry.first_cluster().clone());
-        let mut read_cache = BlockByteCache::new(Some(self.dir_entry.file_size() as usize));
-
-        while data.len() > 0 {
-            if read_cache.all_cached_bytes_read() {
-                if let Some(next_sector) = sectors.next(fat_volume) {
-                    let block = fat_volume.block_device.read_block(next_sector).ok();
-                    if let Some(block) = block {
-                        read_cache.feed(block);
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            let read_bytes = read_cache.read(data);
-            data = &mut data[read_bytes..];
-            read_bytes_total += read_bytes;
-            if read_bytes == 0 {
-                break;
-            }
-        }
-
-        Ok(read_bytes_total)
     }
 }

@@ -83,6 +83,15 @@ where
     _block_device: PhantomData<FatVolume<BD>>,
 }
 
+impl<BD> PartialEq<DirEntry<BD>> for DirEntry<BD>
+where
+    BD: BlockDevice,
+{
+    fn eq(&self, other: &DirEntry<BD>) -> bool {
+        self.first_cluster == other.first_cluster
+    }
+}
+
 impl<BD> DirEntry<BD>
 where
     BD: BlockDevice,
@@ -192,8 +201,7 @@ where
     Iter: SectorIter<BD>,
 {
     volume: &'a mut FatVolume<BD>,
-    sectors: Iter,
-    block_cache: BlockByteCache,
+    block_cache: BlockByteCache<BD, Iter>,
     buffer: [u8; 32],
     total_entries_read: usize,
 }
@@ -205,7 +213,6 @@ where
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DirIter")
-            .field("sectors", &self.sectors)
             .field("total_entries_read", &self.total_entries_read)
             .finish()
     }
@@ -219,8 +226,7 @@ where
     pub fn new(volume: &'a mut FatVolume<BD>, sectors: Iter) -> Self {
         Self {
             volume,
-            sectors,
-            block_cache: BlockByteCache::new(None),
+            block_cache: BlockByteCache::new(None, sectors),
             buffer: [0u8; 32],
             total_entries_read: 0,
         }
@@ -240,13 +246,8 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if self.block_cache.all_cached_bytes_read() {
-                if let Some(next_sector) = self.sectors.next(self.volume) {
-                    let block = self.volume.block_device.read_block(next_sector).ok()?;
-                    self.block_cache.feed(block);
-                } else {
-                    break None;
-                }
+            if !self.block_cache.more_data(self.volume) {
+                break None;
             }
 
             let Self {
