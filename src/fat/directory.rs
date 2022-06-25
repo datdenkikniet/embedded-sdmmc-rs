@@ -135,7 +135,7 @@ impl<'a> DirEntryRaw<'a> {
     define_field!(fst_clus_hi, u16, 20);
     define_field!(wrt_time, u16, 22);
     define_field!(wrt_date, u16, 24);
-    define_field!(fst_clus_lo, u16, 2);
+    define_field!(fst_clus_lo, u16, 26);
     define_field!(file_size, u32, 28);
 }
 

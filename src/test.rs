@@ -1,18 +1,12 @@
 use crate::{
-    fat::{cluster::Cluster, Attributes, FatType, FatVolume, File, SectorIter},
+    fat::{cluster::Cluster, Attributes, FatType, FatVolume},
     mbr::{Mbr, PartitionInfo, PartitionNumber, PartitionType},
-    BlockCount, BlockDevice, BlockIdx, MemoryBlockDevice,
+    BlockCount, BlockDevice, MemoryBlockDevice,
 };
 
 macro_rules! test_dir_entry {
     ($entry:expr, $name:literal, $extension:literal, $attributes:expr, $file_size:literal, $first_cluster:literal) => {{
         unsafe {
-            println!(
-                "File: {}.{}. Size: {} bytes",
-                $entry.name().main_name_str(),
-                $entry.name().extension_str(),
-                $entry.file_size()
-            );
             assert_eq!($entry.name().main_name_str(), $name);
             assert_eq!($entry.name().extension_str(), $extension);
         }
@@ -32,23 +26,12 @@ where
     let mut f16_iter = fat16_volume.root_directory_iter();
 
     let mut idx = 0;
-    let mut readme_dir_entry = None;
     for dir_entry in &mut f16_iter {
         match idx {
-            0 => {
-                test_dir_entry!(dir_entry, "README", "TXT", Attributes::ARCHIVE, 258, 17473);
-                readme_dir_entry = Some(dir_entry);
-            }
-            1 => test_dir_entry!(dir_entry, "EMPTY", "DAT", Attributes::ARCHIVE, 0, 21584),
-            2 => test_dir_entry!(dir_entry, "TEST", "", Attributes::DIRECTORY, 0, 21587),
-            3 => test_dir_entry!(
-                dir_entry,
-                "64MB",
-                "DAT",
-                Attributes::ARCHIVE,
-                67108864,
-                16973
-            ),
+            0 => test_dir_entry!(dir_entry, "README", "TXT", Attributes::ARCHIVE, 258, 32778),
+            1 => test_dir_entry!(dir_entry, "EMPTY", "DAT", Attributes::ARCHIVE, 0, 0),
+            2 => test_dir_entry!(dir_entry, "TEST", "", Attributes::DIRECTORY, 0, 5),
+            3 => test_dir_entry!(dir_entry, "64MB", "DAT", Attributes::ARCHIVE, 67108864, 6),
             _ => unreachable!(),
         };
 
@@ -68,17 +51,10 @@ where
     let mut idx = 0;
     for dir_entry in &mut f32_iter {
         match idx {
-            0 => test_dir_entry!(
-                dir_entry,
-                "64MB",
-                "DAT",
-                Attributes::ARCHIVE,
-                67108864,
-                16973
-            ),
-            1 => test_dir_entry!(dir_entry, "EMPTY", "DAT", Attributes::ARCHIVE, 0, 21584),
-            2 => test_dir_entry!(dir_entry, "README", "TXT", Attributes::ARCHIVE, 258, 17473),
-            3 => test_dir_entry!(dir_entry, "TEST", "", Attributes::DIRECTORY, 0, 21587),
+            0 => test_dir_entry!(dir_entry, "64MB", "DAT", Attributes::ARCHIVE, 67108864, 3),
+            1 => test_dir_entry!(dir_entry, "EMPTY", "DAT", Attributes::ARCHIVE, 0, 0),
+            2 => test_dir_entry!(dir_entry, "README", "TXT", Attributes::ARCHIVE, 258, 16387),
+            3 => test_dir_entry!(dir_entry, "TEST", "", Attributes::DIRECTORY, 0, 16388),
             _ => unreachable!(),
         };
 
@@ -113,41 +89,8 @@ fn read_disk_file() {
     );
 
     let first_partition = mbr.open_partition(PartitionNumber::One).unwrap();
-    // test_first_partition(first_partition);
+    test_first_partition(first_partition);
 
     let second_partition = mbr.open_partition(PartitionNumber::Two).unwrap();
-    // test_second_partition(second_partition);
-
-    let data1 = &mut std::fs::read("disk.img1").unwrap();
-    let mut data1 = MemoryBlockDevice::new(data1);
-
-    for idx in BlockIdx(0).range(BlockCount(0xFFFF)) {
-        let block = data1.read_block(idx).unwrap();
-        if block.contents[0] != 0 {
-            println!("{:?}: {:?}", idx, block);
-        }
-    }
-
-    let mut fat_volume = FatVolume::new(data1).unwrap();
-
-    // Dir_entry first_cluster.sectors().first() should be BlockIdx(552)
-    let dir_entry = fat_volume
-        .root_directory_iter()
-        .find(|f| unsafe { f.name().main_name_str() == "README" })
-        .unwrap();
-
-    panic!("{:?}", dir_entry);
-
-    panic!(
-        "{:?}",
-        fat_volume
-            .all_sectors(dir_entry.first_cluster().clone())
-            .next(&mut fat_volume)
-    );
-
-    let mut file = File::new(dir_entry);
-
-    let data = &mut [0u8; 300];
-    let data_len = file.read_all(&mut fat_volume, data).unwrap();
-    panic!("{:?}", &data[..data_len]);
+    test_second_partition(second_partition);
 }

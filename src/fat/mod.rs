@@ -200,6 +200,10 @@ where
             self.bpb.sectors_per_cluster(),
         )
     }
+
+    pub fn release(self) -> BD {
+        self.block_device
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

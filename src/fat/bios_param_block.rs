@@ -147,6 +147,8 @@ impl BiosParameterBlock {
             sectors_per_cluster,
         };
 
+        me.fat_info = me.compute_fat_type(&raw)?;
+
         let verification_error = Self::verify_signature(raw.signature_word())
             .or(me.verify_root_entry_count())
             .or(me.verify_total_sector_count(&raw))
@@ -210,9 +212,7 @@ impl BiosParameterBlock {
     }
 
     pub fn data_start(&self) -> BlockIdx {
-        let start = self.root_start() + self.root_len();
-        panic!("Data start: {:?}", start);
-        start
+        self.root_start() + self.root_len()
     }
 
     pub fn root_sectors(&self) -> RootDirectorySectors {
