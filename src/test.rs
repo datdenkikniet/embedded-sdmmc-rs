@@ -70,7 +70,8 @@ where
     let mut file = volume
         .open_file(file, crate::fat::file::OpenMode::ReadOnly)
         .unwrap();
-    let mut file = file.activate(volume);
+
+    let mut file = file.activate(volume).unwrap();
 
     let read_bytes = file.read(&mut data).unwrap();
 

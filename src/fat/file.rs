@@ -24,22 +24,13 @@ where
     dir_entry: DirEntry<BD>,
 }
 
-impl<BD> core::fmt::Debug for File<BD>
-where
-    BD: BlockDevice,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("File").finish()
-    }
-}
-
 impl<BD> File<BD>
 where
     BD: BlockDevice,
 {
     pub const EMPTY: Option<Self> = None;
 
-    pub(crate) fn open_dir_entry(
+    pub(crate) fn from_dir_entry(
         dir_entry: DirEntry<BD>,
         volume: &mut FatVolume<BD>,
         mode: OpenMode,
@@ -57,6 +48,11 @@ where
         }
     }
 
+    pub fn close(self, volume: &mut FatVolume<BD>) -> DirEntry<BD> {
+        volume.close_dir_entry(&self.dir_entry);
+        self.dir_entry
+    }
+
     pub fn reset(&mut self, volume: &mut FatVolume<BD>) {
         self.read_cache
             .reset(volume.all_sectors(*self.dir_entry.first_cluster()));
@@ -69,8 +65,12 @@ where
     pub fn activate<'file, 'volume>(
         &'file mut self,
         volume: &'volume mut FatVolume<BD>,
-    ) -> ActiveFile<'file, 'volume, BD> {
-        ActiveFile { file: self, volume }
+    ) -> Option<ActiveFile<'file, 'volume, BD>> {
+        if volume.is_open(&self.dir_entry) {
+            Some(ActiveFile { file: self, volume })
+        } else {
+            None
+        }
     }
 }
 
@@ -120,7 +120,7 @@ where
                 break;
             }
 
-            let read_bytes = self.file.read_cache.read(data);
+            let (read_bytes, _) = self.file.read_cache.read(data);
             data = &mut data[read_bytes..];
             read_bytes_total += read_bytes;
             if read_bytes == 0 {

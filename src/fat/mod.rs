@@ -106,20 +106,22 @@ where
         self.bpb.fat_type()
     }
 
-    pub fn open_file(&mut self, dir_entry: DirEntry<BD>, mode: OpenMode) -> Result<File<BD>, ()> {
-        let entry_is_open = self.open_entries.iter().any(|open_file_entry| {
+    pub fn is_open(&self, dir_entry: &DirEntry<BD>) -> bool {
+        self.open_entries.iter().any(|open_file_entry| {
             if let Some(open_entry) = open_file_entry {
-                open_entry == &dir_entry
+                open_entry == dir_entry
             } else {
                 false
             }
-        });
+        })
+    }
 
-        if entry_is_open {
+    pub fn open_file(&mut self, dir_entry: DirEntry<BD>, mode: OpenMode) -> Result<File<BD>, ()> {
+        if self.is_open(&dir_entry) {
             return Err(());
         }
 
-        let file = if let Some(file) = File::open_dir_entry(dir_entry.clone(), self, mode) {
+        let file = if let Some(file) = File::from_dir_entry(dir_entry.clone(), self, mode) {
             file
         } else {
             return Err(());
@@ -205,6 +207,17 @@ where
             cluster,
             self.bpb.sectors_per_cluster(),
         )
+    }
+
+    pub fn close_dir_entry(&mut self, dir_entry: &DirEntry<BD>) {
+        for f in self.open_entries.iter_mut() {
+            if let Some(entry) = f {
+                if entry == dir_entry {
+                    f.take();
+                    break;
+                }
+            }
+        }
     }
 }
 

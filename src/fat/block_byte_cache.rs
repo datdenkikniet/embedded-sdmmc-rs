@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use crate::{Block, BlockDevice};
+use crate::{Block, BlockDevice, BlockIdx};
 
 use super::{FatVolume, SectorIter};
 
@@ -12,7 +12,7 @@ where
 {
     sectors: Iter,
     byte_index: usize,
-    current_cache: Option<Block>,
+    current_cache: Option<(Block, BlockIdx)>,
     total_read: usize,
     total_len: Option<usize>,
     _block_device: PhantomData<FatVolume<BD>>,
@@ -39,7 +39,7 @@ where
             if let Some(next_sector) = self.sectors.next(volume) {
                 let block = volume.block_device.read_block(next_sector).ok();
                 if let Some(block) = block {
-                    self.feed(block);
+                    self.feed((block, next_sector));
                 } else {
                     return false;
                 }
@@ -51,7 +51,7 @@ where
     }
 
     // Only call this if `all_cached_bytes_read`
-    fn feed(&mut self, block: Block) {
+    fn feed(&mut self, block: (Block, BlockIdx)) {
         self.current_cache = Some(block);
         self.byte_index = 0;
     }
@@ -73,8 +73,8 @@ where
         self.current_cache.take();
     }
 
-    pub fn read(&mut self, data: &mut [u8]) -> usize {
-        if let Some(cache) = &self.current_cache {
+    pub fn read(&mut self, data: &mut [u8]) -> (usize, Option<BlockIdx>) {
+        if let Some((block, sector_num)) = &self.current_cache {
             let total_left = if let Some(total_len) = self.total_len {
                 total_len - self.total_read
             } else {
@@ -84,17 +84,18 @@ where
             let data_to_read = data.len().min(Block::LEN - self.byte_index).min(total_left);
 
             data[..data_to_read]
-                .copy_from_slice(&cache.contents[self.byte_index..self.byte_index + data_to_read]);
+                .copy_from_slice(&block.contents[self.byte_index..self.byte_index + data_to_read]);
             self.byte_index += data_to_read;
             self.total_read += data_to_read;
 
+            let sector_num = *sector_num;
             if self.byte_index == Block::LEN {
                 self.current_cache.take();
             }
 
-            data_to_read
+            (data_to_read, Some(sector_num))
         } else {
-            0
+            (0, None)
         }
     }
 }
