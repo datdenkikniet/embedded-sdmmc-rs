@@ -1,4 +1,4 @@
-use core::{convert::TryInto, marker::PhantomData};
+use core::{convert::TryInto, marker::PhantomData, str::from_utf8_unchecked};
 
 use crate::BlockDevice;
 
@@ -107,33 +107,65 @@ pub struct ShortNameRaw {
 }
 
 impl ShortNameRaw {
-    /// # Safety
-    /// `self.main_name` must contain valid UTF-8
-    pub unsafe fn main_name_str(&self) -> &str {
-        let mut name = &self.main_name[..];
-        while !name.is_empty() && name[name.len() - 1] == 0x20 {
-            name = &name[..name.len() - 1];
+    // Main name, extension, implied '.'
+    pub const MAX_STR_LEN: usize = 8 + 3 + 1;
+    pub const STR: [u8; Self::MAX_STR_LEN] = [0u8; Self::MAX_STR_LEN];
+
+    pub fn main_name_len(&self) -> usize {
+        let mut len = 8;
+        while len > 0 && self.main_name[len - 1] == 0x20 {
+            len -= 1;
         }
-
-        core::str::from_utf8_unchecked(name)
+        len
     }
 
-    /// # Safety
-    /// `self.extension` must contain valid UTF-8
-    pub unsafe fn extension_str(&self) -> &str {
-        let mut name = &self.extension[..];
-        while !name.is_empty() && name[name.len() - 1] == 0x20 {
-            name = &name[..name.len() - 1];
+    pub fn main_name_str(&self) -> Option<&str> {
+        core::str::from_utf8(self.main_name()).ok()
+    }
+
+    pub fn extension_len(&self) -> usize {
+        let mut len = 3;
+        while len > 0 && self.extension[len - 1] == 0x20 {
+            len -= 1;
         }
-        core::str::from_utf8_unchecked(name)
+        len
     }
 
-    pub fn main_name(&self) -> &[u8; 8] {
-        &self.main_name
+    pub fn extension_str(&self) -> Option<&str> {
+        core::str::from_utf8(self.extension()).ok()
     }
 
-    pub fn extension(&self) -> &[u8; 3] {
-        &self.extension
+    pub fn main_name(&self) -> &[u8] {
+        &self.main_name[..self.main_name_len()]
+    }
+
+    pub fn extension(&self) -> &[u8] {
+        &self.extension[..self.extension_len()]
+    }
+
+    pub fn to_str<'a>(&self, data: &'a mut [u8]) -> Option<&'a str> {
+        let main_name = self.main_name_str()?.as_bytes();
+        let main_name_len = main_name.len();
+
+        let extension = self.extension_str()?.as_bytes();
+        let extension_len = extension.len();
+
+        data[..main_name.len()].copy_from_slice(main_name);
+        let extension_len = if extension.len() > 0 {
+            data[main_name_len] = b'.';
+            data[main_name_len + 1..main_name_len + 1 + extension.len()].copy_from_slice(extension);
+            1 + extension_len
+        } else {
+            0
+        };
+
+        // SAFETY: all bytes in data[..main_name_len + extension_len] are produced
+        // by copying previously existing utf-8 data (and a single '.')
+        unsafe {
+            Some(core::str::from_utf8_unchecked(
+                &data[..main_name_len + extension_len],
+            ))
+        }
     }
 
     pub fn is_free(&self) -> bool {

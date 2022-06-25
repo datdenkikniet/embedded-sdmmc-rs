@@ -1,16 +1,19 @@
 use crate::{
-    fat::{cluster::Cluster, directory::Attributes, FatType, FatVolume},
+    fat::{
+        cluster::Cluster,
+        directory::{Attributes, ShortNameRaw},
+        FatType, FatVolume,
+    },
     mbr::{Mbr, PartitionInfo, PartitionNumber, PartitionType},
     BlockCount, BlockDevice, MemoryBlockDevice,
 };
 
 macro_rules! test_dir_entry {
-    ($iter:expr, $name:literal, $extension:literal, $attributes:expr, $file_size:literal, $first_cluster:literal) => {{
+    ($iter:expr, $name:literal, $attributes:expr, $file_size:literal, $first_cluster:literal) => {{
         let entry = $iter.next().expect("Expected another file to exist");
-        unsafe {
-            assert_eq!(entry.short_name().main_name_str(), $name);
-            assert_eq!(entry.short_name().extension_str(), $extension);
-        }
+        let name_data = &mut ShortNameRaw::STR.clone();
+        let name = entry.short_name().to_str(name_data);
+        assert_eq!(name, Some($name));
         assert_eq!(entry.attributes(), &$attributes);
         assert_eq!(entry.file_size(), $file_size);
         assert_eq!(entry.first_cluster(), &Cluster($first_cluster));
@@ -23,21 +26,23 @@ where
 {
     let test_dir = volume
         .root_directory_iter()
-        .find(|f| unsafe { f.short_name().main_name_str() } == "TEST")
+        .find(|f| f.short_name().main_name_str() == Some("TEST"))
         .unwrap();
+
+    let name_data = &mut ShortNameRaw::STR.clone();
 
     let mut subdir_iter = test_dir.iter_subdir(volume).unwrap();
     assert_eq!(
-        unsafe { subdir_iter.next().unwrap().short_name().main_name_str() },
-        "."
+        subdir_iter.next().unwrap().short_name().to_str(name_data),
+        Some(".")
     );
     assert_eq!(
-        unsafe { subdir_iter.next().unwrap().short_name().main_name_str() },
-        ".."
+        subdir_iter.next().unwrap().short_name().to_str(name_data),
+        Some("..")
     );
     assert_eq!(
-        unsafe { subdir_iter.next().unwrap().short_name().main_name_str() },
-        "TEST"
+        subdir_iter.next().unwrap().short_name().to_str(name_data),
+        Some("TEST.DAT")
     );
 
     let long_name_entry = subdir_iter.next().unwrap();
@@ -57,7 +62,7 @@ where
 {
     let file = volume
         .root_directory_iter()
-        .find(|f| unsafe { f.short_name().main_name_str() } == "64MB")
+        .find(|f| f.short_name().main_name_str() == Some("64MB"))
         .unwrap();
 
     let mut data = vec![0; file.file_size() as usize + 1024];
@@ -101,10 +106,10 @@ fn read_disk_file() {
     assert_eq!(fat16_volume.fat_type(), FatType::Fat16);
 
     let mut f16_iter = fat16_volume.root_directory_iter();
-    test_dir_entry!(f16_iter, "README", "TXT", Attributes::ARCHIVE, 258, 32778);
-    test_dir_entry!(f16_iter, "EMPTY", "DAT", Attributes::ARCHIVE, 0, 0);
-    test_dir_entry!(f16_iter, "TEST", "", Attributes::DIRECTORY, 0, 5);
-    test_dir_entry!(f16_iter, "64MB", "DAT", Attributes::ARCHIVE, 67108864, 6);
+    test_dir_entry!(f16_iter, "README.TXT", Attributes::ARCHIVE, 258, 32778);
+    test_dir_entry!(f16_iter, "EMPTY.DAT", Attributes::ARCHIVE, 0, 0);
+    test_dir_entry!(f16_iter, "TEST", Attributes::DIRECTORY, 0, 5);
+    test_dir_entry!(f16_iter, "64MB.DAT", Attributes::ARCHIVE, 67108864, 6);
     assert!(f16_iter.next().is_none());
 
     test_subdir(&mut fat16_volume);
@@ -115,10 +120,10 @@ fn read_disk_file() {
     assert_eq!(fat32_volume.fat_type(), FatType::Fat32);
 
     let mut iter = fat32_volume.root_directory_iter();
-    test_dir_entry!(iter, "64MB", "DAT", Attributes::ARCHIVE, 67108864, 3);
-    test_dir_entry!(iter, "EMPTY", "DAT", Attributes::ARCHIVE, 0, 0);
-    test_dir_entry!(iter, "README", "TXT", Attributes::ARCHIVE, 258, 16387);
-    test_dir_entry!(iter, "TEST", "", Attributes::DIRECTORY, 0, 16388);
+    test_dir_entry!(iter, "64MB.DAT", Attributes::ARCHIVE, 67108864, 3);
+    test_dir_entry!(iter, "EMPTY.DAT", Attributes::ARCHIVE, 0, 0);
+    test_dir_entry!(iter, "README.TXT", Attributes::ARCHIVE, 258, 16387);
+    test_dir_entry!(iter, "TEST", Attributes::DIRECTORY, 0, 16388);
     assert!(iter.next().is_none());
 
     test_subdir(&mut fat32_volume);
