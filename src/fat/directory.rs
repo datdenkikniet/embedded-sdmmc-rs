@@ -34,37 +34,59 @@ pub enum DirEntryError {
     Fat16FistClusHiNotZero,
 }
 
-#[derive(Debug, Clone)]
-pub struct LongNameRaw {
-    long_name_data: [u16; 256],
-}
+#[cfg(feature = "lfn")]
+pub use lfn::LongNameRaw;
 
-impl LongNameRaw {
-    pub fn data(&self) -> &[u16] {
-        &self.long_name_data[..]
+#[cfg(feature = "lfn")]
+pub mod lfn {
+    #[derive(Debug, Clone)]
+    pub struct LongNameRaw {
+        pub(super) long_name_data: [u16; 256],
     }
 
-    pub fn chars(&self) -> [char; 256] {
-        let mut data = ['\0'; 256];
-        for (idx, value) in self
-            .long_name_data
-            .iter()
-            .map(|v| *v as u32)
-            .map(char::from_u32)
-            .map(|c| c.unwrap())
-            .enumerate()
-        {
-            data[idx] = value
+    #[cfg(feature = "lfn")]
+    impl LongNameRaw {
+        pub fn data(&self) -> &[u16] {
+            &self.long_name_data[..]
         }
-        data
-    }
 
-    pub fn len(&self) -> usize {
-        self.long_name_data
-            .iter()
-            .enumerate()
-            .find_map(|(idx, v)| if *v == 0 { Some(idx) } else { None })
-            .unwrap_or(self.long_name_data.len())
+        pub fn chars(&self) -> Option<[char; 256]> {
+            let mut data = ['\0'; 256];
+            for (idx, value) in self
+                .long_name_data
+                .iter()
+                .map(|v| *v as u32)
+                .map(char::from_u32)
+                .enumerate()
+            {
+                data[idx] = value?;
+            }
+            Some(data)
+        }
+
+        pub fn to_str<'a>(&self, data: &'a mut [u8]) -> Option<&'a str> {
+            let chars = self.chars()?;
+            let mut char_idx = 0;
+            for char in chars[..self.len()].iter() {
+                let len = char.len_utf8();
+                if data.len() - char_idx > len {
+                    char.encode_utf8(&mut data[char_idx..char_idx + len]);
+                    char_idx += len;
+                } else {
+                    return None;
+                }
+            }
+            // SAFTEY: all data until char_idx is validly encoded UTF-8
+            Some(unsafe { core::str::from_utf8_unchecked(&data[..char_idx]) })
+        }
+
+        pub fn len(&self) -> usize {
+            self.long_name_data
+                .iter()
+                .enumerate()
+                .find_map(|(idx, v)| if *v == 0 { Some(idx) } else { None })
+                .unwrap_or(self.long_name_data.len())
+        }
     }
 }
 
@@ -115,6 +137,7 @@ where
     BD: BlockDevice,
 {
     name: ShortNameRaw,
+    #[cfg(feature = "lfn")]
     long_name: LongNameRaw,
     attributes: Attributes,
     file_size: u32,
@@ -138,6 +161,7 @@ where
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
+            #[cfg(feature = "lfn")]
             long_name: self.long_name.clone(),
             attributes: self.attributes,
             file_size: self.file_size,
@@ -152,7 +176,7 @@ where
     BD: BlockDevice,
 {
     pub fn new(
-        long_name: LongNameRaw,
+        #[cfg(feature = "lfn")] long_name: LongNameRaw,
         raw: &DirEntryRaw,
         fat_type: FatType,
     ) -> Result<Self, DirEntryError> {
@@ -181,6 +205,7 @@ where
 
         Ok(Self {
             name: short_name,
+            #[cfg(feature = "lfn")]
             long_name,
             attributes,
             file_size,
@@ -226,6 +251,7 @@ where
         (self.short_name().is_free(), first_name_char == 0x00)
     }
 
+    #[cfg(feature = "lfn")]
     pub fn long_name(&self) -> &LongNameRaw {
         &self.long_name
     }
@@ -346,6 +372,38 @@ where
     pub fn total_entries_read(&self) -> usize {
         self.total_entries_read
     }
+
+    #[cfg(feature = "lfn")]
+    fn handle_lfn(raw_dir_entry: &DirEntryRaw, long_name_data: &mut Option<LongNameRaw>) {
+        // TODO: handle "bad" long name entries
+        let mut ord = raw_dir_entry.ldir_ord();
+        let is_last_entry = (ord & 0x40) == 0x40;
+        ord &= !0x40;
+        ord = ord.wrapping_sub(1);
+
+        if is_last_entry {
+            *long_name_data = Some(LongNameRaw {
+                long_name_data: [0u16; 256],
+            });
+        }
+
+        if let Some(long_entry_data) = long_name_data {
+            let d1 = raw_dir_entry.ldir_name1();
+            let d2 = raw_dir_entry.ldir_name2();
+            let d3 = raw_dir_entry.ldir_name3();
+
+            let start_index = DirEntryRaw::LFN_ENTRY_LEN * ord as usize;
+            let end_index = start_index + DirEntryRaw::LFN_ENTRY_LEN;
+
+            if end_index <= 255 {
+                long_entry_data.long_name_data[start_index..start_index + 5].copy_from_slice(&d1);
+                long_entry_data.long_name_data[start_index + 5..start_index + (5 + 6)]
+                    .copy_from_slice(&d2);
+                long_entry_data.long_name_data[start_index + (5 + 6)..start_index + (5 + 6 + 2)]
+                    .copy_from_slice(&d3);
+            }
+        }
+    }
 }
 
 impl<'a, BD, Iter> Iterator for DirIter<'a, BD, Iter>
@@ -364,6 +422,7 @@ where
             ..
         } = self;
 
+        #[cfg(feature = "lfn")]
         let mut long_name_data = None;
 
         loop {
@@ -376,41 +435,11 @@ where
                 let raw_dir_entry = DirEntryRaw::new(&buffer[..]);
 
                 if raw_dir_entry.is_long_name() {
-                    // TODO: handle "bad" long name entries
-                    let mut ord = raw_dir_entry.ldir_ord();
-                    let is_last_entry = (ord & 0x40) == 0x40;
-                    ord &= !0x40;
-                    ord = ord.wrapping_sub(1);
-
-                    if is_last_entry {
-                        long_name_data = Some(LongNameRaw {
-                            long_name_data: [0u16; 256],
-                        });
-                    }
-
-                    if let Some(long_entry_data) = &mut long_name_data {
-                        let d1 = raw_dir_entry.ldir_name1();
-                        let d2 = raw_dir_entry.ldir_name2();
-                        let d3 = raw_dir_entry.ldir_name3();
-
-                        let start_index = DirEntryRaw::LFN_ENTRY_LEN * ord as usize;
-                        let end_index = start_index + DirEntryRaw::LFN_ENTRY_LEN;
-
-                        if end_index > 255 {
-                            // Faulty long name entry
-                            continue;
-                        }
-
-                        long_entry_data.long_name_data[start_index..start_index + 5]
-                            .copy_from_slice(&d1);
-                        long_entry_data.long_name_data[start_index + 5..start_index + (5 + 6)]
-                            .copy_from_slice(&d2);
-                        long_entry_data.long_name_data
-                            [start_index + (5 + 6)..start_index + (5 + 6 + 2)]
-                            .copy_from_slice(&d3);
-                    }
+                    #[cfg(feature = "lfn")]
+                    Self::handle_lfn(&raw_dir_entry, &mut long_name_data);
                 } else {
                     let dir_entry = DirEntry::new(
+                        #[cfg(feature = "lfn")]
                         long_name_data.take().unwrap_or(LongNameRaw {
                             long_name_data: [0u16; 256],
                         }),

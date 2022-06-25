@@ -42,15 +42,11 @@ where
 
     let long_name_entry = subdir_iter.next().unwrap();
     let long_name = long_name_entry.long_name();
-    let name_len = long_name.len();
 
-    assert_eq!(
-        &[
-            'a', ' ', 'f', 'i', 'l', 'e', ' ', 'w', 'i', 't', 'h', ' ', 'a', ' ', 'm', 'u', 'c',
-            'h', ' ', 'l', 'o', 'n', 'g', 'e', 'r', ' ', 'n', 'a', 'm', 'e'
-        ],
-        &long_name.chars()[..name_len]
-    );
+    let str_data = &mut [0u8; 256];
+    let long_name = long_name.to_str(str_data);
+
+    assert_eq!(Some("a file with a much longer name"), long_name);
 
     assert!(subdir_iter.next().is_none());
 }
