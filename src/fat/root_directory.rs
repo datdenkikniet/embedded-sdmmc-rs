@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use crate::{blockdevice::BlockIter, BlockCount, BlockDevice, BlockIdx};
 
-use super::{cluster::ClusterIterator, Cluster, FatVolume, SectorIter};
+use super::{cluster::ClusterSectorIterator, Cluster, FatVolume, SectorIter};
 
 #[derive(Debug, Clone, Copy)]
 pub enum RootDirectorySectors {
@@ -24,7 +24,7 @@ impl RootDirectorySectors {
 
 #[derive(Debug)]
 enum RootDirIterInner {
-    Cluster(ClusterIterator),
+    Cluster(ClusterSectorIterator),
     Region(BlockIter),
 }
 

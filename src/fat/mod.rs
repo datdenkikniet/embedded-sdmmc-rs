@@ -1,11 +1,11 @@
-use core::{convert::TryInto, marker::PhantomData, num::NonZeroU8};
+use core::convert::TryInto;
 
 use crate::{BlockDevice, BlockIdx};
 
 use self::{
     bios_param_block::{BiosParameterBlock, BpbError},
     block_byte_cache::BlockByteCache,
-    cluster::{Cluster, ClusterIterator},
+    cluster::{Cluster, ClusterSectorIterator},
     directory::{DirEntry, DirIter},
     root_directory::RootDirIter,
 };
@@ -21,36 +21,6 @@ where
     BD: BlockDevice,
 {
     fn next(&mut self, volume: &mut FatVolume<BD>) -> Option<BlockIdx>;
-}
-
-bitflags::bitflags! {
-    pub struct Attributes: u8 {
-        const READ_ONLY = (1 << 0);
-        const HIDDEN = (1 << 1);
-        const SYSTEM = (1 << 2);
-        const VOLUME_ID = (1 << 3);
-        const DIRECTORY = (1 << 4);
-        const ARCHIVE = (1 << 5);
-    }
-}
-
-impl Attributes {
-    pub fn is_long_name(&self) -> bool {
-        self.contains(Self::READ_ONLY | Self::HIDDEN | Self::SYSTEM | Self::VOLUME_ID)
-    }
-}
-
-pub struct Timestamp {
-    tenths: u8,
-    double_second_count: u8,
-    minutes: u8,
-    hours: u8,
-}
-
-pub struct Date {
-    day_of_month: NonZeroU8,
-    month_of_year: NonZeroU8,
-    year: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -192,8 +162,8 @@ where
         &self.bpb
     }
 
-    pub fn all_sectors(&mut self, cluster: Cluster) -> ClusterIterator {
-        ClusterIterator::new(
+    pub fn all_sectors(&mut self, cluster: Cluster) -> ClusterSectorIterator {
+        ClusterSectorIterator::new(
             1,
             self.bpb.data_start(),
             cluster.clone(),
@@ -263,8 +233,7 @@ pub struct File<BD>
 where
     BD: BlockDevice,
 {
-    dir_entry: DirEntry,
-    _block_device: PhantomData<BD>,
+    dir_entry: DirEntry<BD>,
 }
 
 impl<BD> core::fmt::Debug for File<BD>
@@ -280,10 +249,11 @@ impl<BD> File<BD>
 where
     BD: BlockDevice,
 {
-    pub fn new(dir_entry: DirEntry) -> Self {
-        Self {
-            dir_entry,
-            _block_device: PhantomData {},
+    pub fn new(dir_entry: DirEntry<BD>) -> Option<Self> {
+        if !dir_entry.is_dir() {
+            Some(Self { dir_entry })
+        } else {
+            None
         }
     }
 

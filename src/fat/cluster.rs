@@ -17,7 +17,7 @@ impl Cluster {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClusterIterator {
+pub struct ClusterSectorIterator {
     fat_number: u32,
     current_cluster: Cluster,
     data_start: BlockIdx,
@@ -25,7 +25,7 @@ pub struct ClusterIterator {
     current_cluster_sectors: BlockIter,
 }
 
-impl ClusterIterator {
+impl ClusterSectorIterator {
     pub fn new(
         fat_number: u32,
         data_start: BlockIdx,
@@ -42,7 +42,7 @@ impl ClusterIterator {
     }
 }
 
-impl<BD> SectorIter<BD> for ClusterIterator
+impl<BD> SectorIter<BD> for ClusterSectorIterator
 where
     BD: BlockDevice,
 {

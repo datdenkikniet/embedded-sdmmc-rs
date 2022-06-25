@@ -1,10 +1,33 @@
-use core::convert::TryInto;
+use core::{convert::TryInto, marker::PhantomData};
 
 use crate::BlockDevice;
 
 use super::{
-    block_byte_cache::BlockByteCache, cluster::Cluster, Attributes, FatType, FatVolume, SectorIter,
+    block_byte_cache::BlockByteCache,
+    cluster::{Cluster, ClusterSectorIterator},
+    FatType, FatVolume, SectorIter,
 };
+
+bitflags::bitflags! {
+    pub struct Attributes: u8 {
+        const READ_ONLY = (1 << 0);
+        const HIDDEN = (1 << 1);
+        const SYSTEM = (1 << 2);
+        const VOLUME_ID = (1 << 3);
+        const DIRECTORY = (1 << 4);
+        const ARCHIVE = (1 << 5);
+    }
+}
+
+impl Attributes {
+    pub fn is_long_name(&self) -> bool {
+        self.contains(Self::READ_ONLY | Self::HIDDEN | Self::SYSTEM | Self::VOLUME_ID)
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.contains(Self::DIRECTORY)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum DirEntryError {
@@ -49,14 +72,21 @@ impl ShortNameRaw {
 }
 
 #[derive(Debug, Clone)]
-pub struct DirEntry {
+pub struct DirEntry<BD>
+where
+    BD: BlockDevice,
+{
     name: ShortNameRaw,
     attributes: Attributes,
     file_size: u32,
     first_cluster: Cluster,
+    _block_device: PhantomData<FatVolume<BD>>,
 }
 
-impl DirEntry {
+impl<BD> DirEntry<BD>
+where
+    BD: BlockDevice,
+{
     pub fn new(raw: &DirEntryRaw, fat_type: FatType) -> Result<Self, DirEntryError> {
         let name = raw.name();
         let attributes = Attributes::from_bits_truncate(raw.attr());
@@ -84,6 +114,7 @@ impl DirEntry {
             attributes,
             file_size,
             first_cluster,
+            _block_device: Default::default(),
         })
     }
 
@@ -95,12 +126,28 @@ impl DirEntry {
         &self.attributes
     }
 
+    pub fn is_dir(&self) -> bool {
+        self.attributes().is_dir()
+    }
+
     pub fn file_size(&self) -> u32 {
         self.file_size
     }
 
     pub fn first_cluster(&self) -> &Cluster {
         &self.first_cluster
+    }
+
+    pub fn iter_subdir<'a>(
+        &'a self,
+        volume: &'a mut FatVolume<BD>,
+    ) -> Option<DirIter<'a, BD, ClusterSectorIterator>> {
+        if self.is_dir() {
+            let cluster_iterator = volume.all_sectors(self.first_cluster);
+            Some(DirIter::new(volume, cluster_iterator))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn get_free_status(&self) -> (bool, bool) {
@@ -157,8 +204,9 @@ where
     Iter: SectorIter<BD> + core::fmt::Debug,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FileIter")
+        f.debug_struct("DirIter")
             .field("sectors", &self.sectors)
+            .field("total_entries_read", &self.total_entries_read)
             .finish()
     }
 }
@@ -185,10 +233,10 @@ where
 
 impl<'a, BD, Iter> Iterator for DirIter<'a, BD, Iter>
 where
-    BD: BlockDevice,
+    BD: BlockDevice + core::fmt::Debug,
     Iter: SectorIter<BD>,
 {
-    type Item = DirEntry;
+    type Item = DirEntry<BD>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -205,11 +253,12 @@ where
                 block_cache,
                 buffer,
                 volume,
+                total_entries_read,
                 ..
             } = self;
 
             if block_cache.read(buffer) == 32 {
-                self.total_entries_read += 1;
+                *total_entries_read += 1;
                 let raw_dir_entry = DirEntryRaw::new(&buffer[..]);
                 let dir_entry = DirEntry::new(&raw_dir_entry, volume.bpb.fat_type()).ok()?;
                 let (this_entry_free, all_following_free) = dir_entry.get_free_status();

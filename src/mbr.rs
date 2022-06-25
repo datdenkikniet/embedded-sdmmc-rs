@@ -99,6 +99,18 @@ where
     info: PartitionInfo,
 }
 
+impl<BD> core::fmt::Debug for Partition<BD>
+where
+    BD: BlockDevice + Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Partition")
+            .field("block_device", &self.block_device)
+            .field("info", &self.info)
+            .finish()
+    }
+}
+
 impl<BD> Partition<BD>
 where
     BD: BlockDevice,
@@ -632,11 +644,8 @@ mod tests {
             .read(&mut blocks, BlockIdx(3), "test_overread")
             .is_err());
 
-        partition_one
-            .read(&mut blocks, BlockIdx(0), "test")
-            .unwrap();
+        let first_block = partition_one.read_block(BlockIdx(0)).unwrap();
 
-        let [first_block] = blocks;
         assert_eq!(first_block.contents, BLOCKS[1].contents);
     }
 }
