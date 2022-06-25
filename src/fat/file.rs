@@ -6,7 +6,7 @@ use super::{
 };
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) enum OpenMode {
+pub enum OpenMode {
     ReadWrite,
     ReadOnly,
 }
@@ -86,6 +86,11 @@ where
     }
 }
 
+pub enum WriteError<E> {
+    DeviceError(E),
+    FileNotWriteable,
+}
+
 pub struct ActiveFile<'file, 'volume, BD>
 where
     BD: BlockDevice,
@@ -124,6 +129,14 @@ where
         }
 
         Ok(read_bytes_total)
+    }
+
+    pub fn write(&mut self, _data: &[u8]) -> Result<usize, WriteError<BD::Error>> {
+        match self.file.mode {
+            OpenMode::ReadWrite => {}
+            OpenMode::ReadOnly => return Err(WriteError::FileNotWriteable),
+        }
+        todo!()
     }
 }
 

@@ -1,4 +1,4 @@
-use core::{convert::TryInto, marker::PhantomData, str::from_utf8_unchecked};
+use core::{convert::TryInto, marker::PhantomData};
 
 use crate::BlockDevice;
 

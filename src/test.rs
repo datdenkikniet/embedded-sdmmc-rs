@@ -67,7 +67,9 @@ where
 
     let mut data = vec![0; file.file_size() as usize + 1024];
 
-    let mut file = volume.open_file(file).unwrap();
+    let mut file = volume
+        .open_file(file, crate::fat::file::OpenMode::ReadOnly)
+        .unwrap();
     let mut file = file.activate(volume);
 
     let read_bytes = file.read(&mut data).unwrap();

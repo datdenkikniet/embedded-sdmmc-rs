@@ -106,7 +106,7 @@ where
         self.bpb.fat_type()
     }
 
-    pub fn open_file(&mut self, dir_entry: DirEntry<BD>) -> Result<File<BD>, ()> {
+    pub fn open_file(&mut self, dir_entry: DirEntry<BD>, mode: OpenMode) -> Result<File<BD>, ()> {
         let entry_is_open = self.open_entries.iter().any(|open_file_entry| {
             if let Some(open_entry) = open_file_entry {
                 open_entry == &dir_entry
@@ -119,12 +119,11 @@ where
             return Err(());
         }
 
-        let file =
-            if let Some(file) = File::open_dir_entry(dir_entry.clone(), self, OpenMode::ReadOnly) {
-                file
-            } else {
-                return Err(());
-            };
+        let file = if let Some(file) = File::open_dir_entry(dir_entry.clone(), self, mode) {
+            file
+        } else {
+            return Err(());
+        };
 
         let empty_entry = self.open_entries.iter_mut().find(|f| f.is_none());
 
