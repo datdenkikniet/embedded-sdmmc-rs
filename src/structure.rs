@@ -35,26 +35,55 @@ macro_rules! define_field {
         }
     };
 
-    ($name:ident, u8, $offset:expr) => {
-        /// Get the value from the $name field
-        pub fn $name(&self) -> u8 {
-            self.data()[$offset]
+    ($name:ident, $set_name:ident, u8, $offset:expr) => {
+        doc_comment::doc_comment! {
+            concat!("Get the value of the ", stringify!($name), " field"),
+            pub fn $name(&self) -> u8 {
+                self.data()[$offset]
+            }
+        }
+
+        doc_comment::doc_comment! {
+            concat!("Set the value of the ", stringify!($name), " field"),
+            pub fn $set_name(&mut self, value: u8) {
+                self.data_mut()[$offset] = value;
+            }
+        }
+
+    };
+
+    ($name:ident, $set_name:ident, u16, $offset:expr) => {
+        doc_comment::doc_comment! {
+            concat!("Get the value of the ", stringify!($name), " field"),
+            pub fn $name(&self) -> u16 {
+                use core::convert::TryInto;
+                u16::from_le_bytes(self.data()[$offset..$offset + 2].try_into().expect("Infallible"))
+            }
+        }
+
+        doc_comment::doc_comment! {
+            concat!("Set the value of the ", stringify!($name), " field"),
+            pub fn $set_name(&mut self, value: u16) {
+                self.data_mut()[$offset..$offset+2].copy_from_slice(&value.to_le_bytes());
+            }
         }
     };
 
-    ($name:ident, u16, $offset:expr) => {
-        /// Get the value from the $name field
-        pub fn $name(&self) -> u16 {
-            use core::convert::TryInto;
-            u16::from_le_bytes(self.data()[$offset..$offset + 2].try_into().expect("Infallible"))
+    ($name:ident, $set_name:ident, u32, $offset:expr) => {
+        doc_comment::doc_comment! {
+            concat!("Get the value of the ", stringify!($name), " field"),
+            pub fn $name(&self) -> u32 {
+                use core::convert::TryInto;
+                u32::from_le_bytes(self.data()[$offset..$offset + 4].try_into().expect("Infallible"))
+            }
         }
-    };
 
-    ($name:ident, u32, $offset:expr) => {
-        /// Get the $name field
-        pub fn $name(&self) -> u32 {
-            use core::convert::TryInto;
-            u32::from_le_bytes(self.data()[$offset..$offset + 4].try_into().expect("Infallible"))
+        doc_comment::doc_comment! {
+            concat!("Set the value of the ", stringify!($name), " field"),
+            pub fn $set_name(&self) -> u32 {
+                use core::convert::TryInto;
+                u32::from_le_bytes(self.data()[$offset..$offset + 4].try_into().expect("Infallible"))
+            }
         }
     };
 }

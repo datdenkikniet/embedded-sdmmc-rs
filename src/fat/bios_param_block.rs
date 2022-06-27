@@ -94,10 +94,10 @@ impl PartialEq<BiosParameterBlock> for BiosParameterBlock {
 
 /// The BPB_Reserved and BS_* fields are not verified.
 impl BiosParameterBlock {
-    const SIGNATURE: [u8; 2] = [0x55, 0xAA];
+    pub const SIGNATURE: [u8; 2] = [0x55, 0xAA];
 
-    pub fn new(block: Block) -> Result<Self, BpbError> {
-        let raw = BiosParameterBlockRaw { block };
+    pub fn new(mut block: Block) -> Result<Self, BpbError> {
+        let raw = BiosParameterBlockRaw::new(&mut block);
 
         let reserved_sector_count =
             NonZeroU16::new(raw.rsvd_sec_cnt()).ok_or(BpbError::ReservedSectorCountZero)?;
@@ -134,9 +134,10 @@ impl BiosParameterBlock {
 
         let num_fats = raw.num_fats();
 
-        let mut me = Self {
-            // Assume we have FAT16, to be overwritten later
-            fat_info: FatInfo::Fat16,
+        let fat_info = Self::compute_fat_type(cluster_count, &raw)?;
+
+        let me = Self {
+            fat_info,
             fat_size,
             reserved_sector_count,
             bytes_per_sector,
@@ -146,8 +147,6 @@ impl BiosParameterBlock {
             num_fats,
             sectors_per_cluster,
         };
-
-        me.fat_info = me.compute_fat_type(&raw)?;
 
         let verification_error = Self::verify_signature(raw.signature_word())
             .or_else(|| me.verify_root_entry_count())
@@ -250,10 +249,13 @@ impl BiosParameterBlock {
         data_sectors / sectors_per_cluster.get()
     }
 
-    fn compute_fat_type(&self, raw: &BiosParameterBlockRaw) -> Result<FatInfo, BpbError> {
-        if self.cluster_count < 4085 {
+    fn compute_fat_type(
+        cluster_count: u32,
+        raw: &BiosParameterBlockRaw,
+    ) -> Result<FatInfo, BpbError> {
+        if cluster_count < 4085 {
             Err(BpbError::Fat12NotSupported)
-        } else if self.cluster_count < 65525 {
+        } else if cluster_count < 65525 {
             Ok(FatInfo::Fat16)
         } else {
             let root_cluster = Self::root_cluster_checked(raw.root_clus())?;
@@ -408,39 +410,51 @@ impl BiosParameterBlock {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BiosParameterBlockRaw {
-    block: Block,
+#[derive(Debug)]
+pub struct BiosParameterBlockRaw<'a> {
+    block: &'a mut Block,
 }
 
-impl BiosParameterBlockRaw {
+impl<'a> BiosParameterBlockRaw<'a> {
+    pub(crate) fn new(block: &'a mut Block) -> Self {
+        Self { block }
+    }
+
     fn data(&self) -> &[u8] {
         &self.block.contents
     }
 
-    define_field!(bytes_per_sec, u16, 11);
-    define_field!(sec_per_clu, u8, 13);
-    define_field!(rsvd_sec_cnt, u16, 14);
-    define_field!(num_fats, u8, 16);
-    define_field!(root_ent_cnt, u16, 17);
-    define_field!(tot_sec_16, u16, 19);
-    define_field!(media, u8, 21);
-    define_field!(fat_sz_16, u16, 22);
-    define_field!(sectors_per_track, u16, 24);
-    define_field!(number_of_heads, u16, 26);
-    define_field!(hidden_sectors, u32, 28);
-    define_field!(tot_sec_32, u32, 32);
+    fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.block.contents
+    }
+
+    define_field!(bytes_per_sec, set_bytes_per_sec, u16, 11);
+    define_field!(sec_per_clu, set_sec_per_clu, u8, 13);
+    define_field!(rsvd_sec_cnt, set_rsvd_sec_cnt, u16, 14);
+    define_field!(num_fats, set_num_fats, u8, 16);
+    define_field!(root_ent_cnt, set_root_ent_cnt, u16, 17);
+    define_field!(tot_sec_16, set_tot_sec_16, u16, 19);
+    define_field!(media, set_media, u8, 21);
+    define_field!(fat_sz_16, set_fat_sz_16, u16, 22);
+    define_field!(sectors_per_track, set_sectors_per_track, u16, 24);
+    define_field!(number_of_heads, set_number_of_heads, u16, 26);
+    define_field!(hidden_sectors, set_hidden_sectors, u32, 28);
+    define_field!(tot_sec_32, set_tot_sec_32, u32, 32);
 
     // FAT32 specific structure
-    define_field!(fat_sz_32, u32, 36);
-    define_field!(ext_flags, u16, 40);
-    define_field!(fs_ver, u16, 42);
-    define_field!(root_clus, u32, 44);
-    define_field!(fs_info, u16, 48);
-    define_field!(bk_boot_sec, u16, 50);
+    define_field!(fat_sz_32, set_fat_sz_32, u32, 36);
+    define_field!(ext_flags, set_ext_flags, u16, 40);
+    define_field!(fs_ver, set_fs_ver, u16, 42);
+    define_field!(root_clus, set_root_clus, u32, 44);
+    define_field!(fs_info, set_fs_info, u16, 48);
+    define_field!(bk_boot_sec, set_bk_boot_sec, u16, 50);
 
-    fn signature_word(&self) -> [u8; 2] {
+    pub fn signature_word(&self) -> [u8; 2] {
         let d = self.data();
         [d[510], d[511]]
+    }
+
+    pub fn set_signature(&mut self, bytes: [u8; 2]) {
+        self.data_mut()[510..512].copy_from_slice(&bytes)
     }
 }

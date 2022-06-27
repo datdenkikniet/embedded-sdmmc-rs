@@ -5,7 +5,7 @@ use crate::{BlockDevice, BlockIdx};
 use self::{
     bios_param_block::{BiosParameterBlock, BpbError},
     cluster::{Cluster, ClusterSectorIterator},
-    directory::{DirEntry, DirIter},
+    directory::{DirEntry, DirEntryInfo, DirEntryParent, DirIter},
     file::{File, OpenMode},
     root_directory::RootDirIter,
 };
@@ -17,6 +17,15 @@ pub mod directory;
 pub mod file;
 pub mod root_directory;
 
+#[cfg(test)]
+mod test;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PhysicalLocation {
+    sector: BlockIdx,
+    byte_offset: usize,
+}
+
 pub trait SectorIter<BD>
 where
     BD: BlockDevice,
@@ -26,7 +35,6 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FatType {
-    // Fat12
     Fat16,
     Fat32,
 }
@@ -62,23 +70,15 @@ where
 {
     bpb: BiosParameterBlock,
     block_device: BD,
-    open_entries: [Option<DirEntry<BD>>; MAX_FILES],
-}
-
-impl<BD> core::fmt::Debug for FatVolume<BD>
-where
-    BD: BlockDevice,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FatVolume").field("bpb", &self.bpb).finish()
-    }
+    fd: usize,
+    open_entries: [Option<(usize, DirEntryInfo)>; MAX_FILES],
 }
 
 impl<BD> FatVolume<BD>
 where
     BD: BlockDevice,
 {
-    const EMPTY_FILE_HANDLE: Option<DirEntry<BD>> = None;
+    const EMPTY_FILE_HANDLE: Option<(usize, DirEntryInfo)> = None;
 
     pub fn new(mut block_device: BD) -> Result<Self, FatError<BD::Error>> {
         let bpb_block = block_device
@@ -91,6 +91,7 @@ where
             bpb,
             block_device,
             open_entries: [Self::EMPTY_FILE_HANDLE; MAX_FILES],
+            fd: 0,
         })
     }
 
@@ -106,51 +107,68 @@ where
         self.bpb.fat_type()
     }
 
-    pub fn is_open(&self, dir_entry: &DirEntry<BD>) -> bool {
+    pub fn dir_entry_is_open(&self, dir_entry: &DirEntry<BD>) -> bool {
         self.open_entries.iter().any(|open_file_entry| {
-            if let Some(open_entry) = open_file_entry {
-                open_entry == dir_entry
+            if let Some((_, open_entry)) = open_file_entry {
+                open_entry == dir_entry.info()
             } else {
                 false
             }
         })
     }
 
-    pub fn open_file(&mut self, dir_entry: DirEntry<BD>, mode: OpenMode) -> Result<File<BD>, ()> {
-        if self.is_open(&dir_entry) {
-            return Err(());
+    pub fn file_is_open(&self, file: &File<BD>) -> bool {
+        self.open_entries.iter().any(|open_file_entry| {
+            if let Some((fd, _)) = open_file_entry {
+                *fd == file.fd
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn open_file<'parent>(
+        &mut self,
+        dir_entry: DirEntry<'parent, BD>,
+        mode: OpenMode,
+    ) -> Result<File<'parent, BD>, DirEntry<'parent, BD>> {
+        if self.dir_entry_is_open(&dir_entry) {
+            return Err(dir_entry);
         }
 
-        let file = if let Some(file) = File::from_dir_entry(dir_entry.clone(), self, mode) {
+        let fd = self.next_fd();
+        let file = if let Some(file) = File::from_dir_entry(dir_entry.copy(), self, mode, fd) {
             file
         } else {
-            return Err(());
+            return Err(dir_entry);
         };
 
         let empty_entry = self.open_entries.iter_mut().find(|f| f.is_none());
 
         if let Some(entry) = empty_entry {
-            *entry = Some(dir_entry);
+            *entry = Some((fd, dir_entry.info().copy()));
             Ok(file)
         } else {
-            Err(())
+            Err(dir_entry)
         }
     }
 
-    pub fn root_directory_iter(&mut self) -> DirIter<BD, RootDirIter<BD>> {
+    pub fn root_dir_iter<'me, 'func_duration>(
+        &'me mut self,
+    ) -> DirIter<'me, 'func_duration, BD, RootDirIter<BD>> {
         let root_sectors = self.bpb().root_sectors();
         let iter = root_sectors.iter(self);
-        DirIter::new(self, iter)
+        DirIter::new(self, DirEntryParent::RootDir, iter)
     }
 
-    pub(crate) fn get_fat_entry(
+    pub(crate) fn get_entry_location(
         &mut self,
         fat_number: u32,
-        cluster: &Cluster,
-    ) -> Result<Entry, BD::Error> {
-        let fat_offset = match self.bpb.fat_type() {
-            FatType::Fat16 => cluster.0 * 2,
-            FatType::Fat32 => cluster.0 * 4,
+        entry: &Entry,
+    ) -> PhysicalLocation {
+        let fat_offset = match self.fat_type() {
+            FatType::Fat16 => entry.0 * 2,
+            FatType::Fat32 => entry.0 * 4,
         };
 
         let sec_num = self.bpb.reserved_sector_count().0
@@ -165,6 +183,22 @@ where
             BlockIdx((fat_number * self.bpb.fat_size().0) + entry_sector.0)
         };
 
+        PhysicalLocation {
+            sector,
+            byte_offset: entry_offset,
+        }
+    }
+
+    pub(crate) fn get_fat_entry(
+        &mut self,
+        fat_number: u32,
+        cluster: &Cluster,
+    ) -> Result<(Entry, PhysicalLocation), BD::Error> {
+        let location = self.get_entry_location(fat_number, &Entry(cluster.0));
+        let PhysicalLocation {
+            sector,
+            byte_offset: entry_offset,
+        } = location;
         let sector = self.block_device.read_block(sector)?;
 
         let entry_value = match self.bpb.fat_type() {
@@ -183,7 +217,18 @@ where
             }
         };
 
-        Ok(Entry(entry_value))
+        Ok((Entry(entry_value), location))
+    }
+
+    pub(crate) fn find_next_entry(
+        &mut self,
+        current_entry: &Entry,
+    ) -> Result<Option<Entry>, BD::Error> {
+        if current_entry.is_final(self.fat_type()) || current_entry.is_free(self.fat_type()) {
+            Ok(None)
+        } else {
+            Ok(Some(Entry(current_entry.0)))
+        }
     }
 
     pub(crate) fn find_next_cluster(
@@ -191,13 +236,8 @@ where
         fat_number: u32,
         current_cluster: &Cluster,
     ) -> Result<Option<Cluster>, BD::Error> {
-        let my_entry = self.get_fat_entry(fat_number, current_cluster)?;
-
-        if my_entry.is_final(self.fat_type()) || my_entry.is_free(self.fat_type()) {
-            Ok(None)
-        } else {
-            Ok(Some(Cluster(my_entry.0)))
-        }
+        let (my_entry, _) = self.get_fat_entry(fat_number, current_cluster)?;
+        Ok(self.find_next_entry(&my_entry)?.map(|e| Cluster(e.0)))
     }
 
     pub(crate) fn all_sectors(&mut self, cluster: Cluster) -> ClusterSectorIterator {
@@ -211,13 +251,58 @@ where
 
     pub fn close_dir_entry(&mut self, dir_entry: &DirEntry<BD>) {
         for f in self.open_entries.iter_mut() {
-            if let Some(entry) = f {
-                if entry == dir_entry {
+            if let Some((_, entry)) = f {
+                if entry == dir_entry.info() {
                     f.take();
-                    break;
                 }
             }
         }
+    }
+
+    pub(crate) fn deallocate_dir_entry(
+        &mut self,
+        dir_entry: DirEntry<BD>,
+    ) -> Result<(), BD::Error> {
+        self.close_dir_entry(&dir_entry);
+
+        let fat_type = self.fat_type();
+        let (mut current_entry, mut location) =
+            self.get_fat_entry(1, dir_entry.info().first_cluster())?;
+
+        loop {
+            let mut block = self.block_device.read_block(location.sector)?;
+
+            let offset = location.byte_offset;
+            match fat_type {
+                FatType::Fat16 => {
+                    block.contents[offset..offset + 2]
+                        .copy_from_slice(&(Entry::FREE.0 as u16).to_le_bytes());
+                }
+                FatType::Fat32 => {
+                    block.contents[offset..offset + 4]
+                        .copy_from_slice(&(Entry::FREE.0 as u32).to_le_bytes());
+                }
+            }
+
+            if !current_entry.is_final(fat_type) {
+                (current_entry, location) =
+                    if let Some(val) = self.find_next_entry(&current_entry)? {
+                        let location = self.get_entry_location(1, &val);
+                        (val, location)
+                    } else {
+                        break;
+                    }
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn next_fd(&mut self) -> usize {
+        let value = self.fd;
+        self.fd = self.fd.wrapping_add(1);
+        value
     }
 }
 

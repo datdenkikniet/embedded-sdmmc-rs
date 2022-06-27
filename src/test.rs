@@ -2,6 +2,7 @@ use crate::{
     fat::{
         cluster::Cluster,
         directory::{Attributes, ShortNameRaw},
+        file::OpenMode,
         FatType, FatVolume,
     },
     mbr::{Mbr, PartitionInfo, PartitionNumber, PartitionType},
@@ -25,7 +26,7 @@ where
     BD: BlockDevice + std::fmt::Debug,
 {
     let test_dir = volume
-        .root_directory_iter()
+        .root_dir_iter()
         .find(|f| f.short_name().main_name_str() == Some("TEST"))
         .unwrap();
 
@@ -40,10 +41,10 @@ where
         subdir_iter.next().unwrap().short_name().to_str(name_data),
         Some("..")
     );
-    assert_eq!(
-        subdir_iter.next().unwrap().short_name().to_str(name_data),
-        Some("TEST.DAT")
-    );
+
+    let test = subdir_iter.next().unwrap();
+
+    assert_eq!(test.short_name().to_str(name_data), Some("TEST.DAT"));
 
     let long_name_entry = subdir_iter.next().unwrap();
     let long_name = long_name_entry.long_name();
@@ -54,28 +55,38 @@ where
     assert_eq!(Some("a file with a much longer name"), long_name);
 
     assert!(subdir_iter.next().is_none());
+
+    let mut opened_test_dat = volume.open_file(test, OpenMode::ReadOnly).unwrap();
+    let mut opened_test_dat = opened_test_dat.activate(volume).unwrap();
+    let data = &mut [0u8; 4096];
+    let bytes = opened_test_dat.read(data).unwrap();
+    assert_eq!(bytes, 3500);
 }
 
 fn test_64mb<BD>(volume: &mut FatVolume<BD>)
 where
-    BD: BlockDevice,
+    BD: BlockDevice + core::fmt::Debug,
 {
-    let file = volume
-        .root_directory_iter()
+    let dir_entry = volume
+        .root_dir_iter()
         .find(|f| f.short_name().main_name_str() == Some("64MB"))
         .unwrap();
 
-    let mut data = vec![0; file.file_size() as usize + 1024];
+    let mut data = vec![0; dir_entry.file_size() as usize + 1024];
 
-    let mut file = volume
-        .open_file(file, crate::fat::file::OpenMode::ReadOnly)
-        .unwrap();
+    let mut file = volume.open_file(dir_entry, OpenMode::ReadOnly).unwrap();
 
-    let mut file = file.activate(volume).unwrap();
+    let mut active_file = file.activate(volume).unwrap();
 
-    let read_bytes = file.read(&mut data).unwrap();
+    let read_bytes = active_file.read(&mut data).unwrap();
 
-    assert_eq!(read_bytes, file.file().dir_entry().file_size() as usize);
+    assert_eq!(
+        read_bytes,
+        active_file.file().dir_entry().file_size() as usize
+    );
+
+    volume.close_dir_entry(file.dir_entry());
+    assert!(file.activate(volume).is_none());
 }
 
 #[test]
@@ -108,7 +119,7 @@ fn read_disk_file() {
     let mut fat16_volume = FatVolume::new(first_partition).unwrap();
     assert_eq!(fat16_volume.fat_type(), FatType::Fat16);
 
-    let mut f16_iter = fat16_volume.root_directory_iter();
+    let mut f16_iter = fat16_volume.root_dir_iter();
     test_dir_entry!(f16_iter, "README.TXT", Attributes::ARCHIVE, 258, 32778);
     test_dir_entry!(f16_iter, "EMPTY.DAT", Attributes::ARCHIVE, 0, 0);
     test_dir_entry!(f16_iter, "TEST", Attributes::DIRECTORY, 0, 5);
@@ -122,7 +133,7 @@ fn read_disk_file() {
     let mut fat32_volume = FatVolume::new(second_partition).unwrap();
     assert_eq!(fat32_volume.fat_type(), FatType::Fat32);
 
-    let mut iter = fat32_volume.root_directory_iter();
+    let mut iter = fat32_volume.root_dir_iter();
     test_dir_entry!(iter, "64MB.DAT", Attributes::ARCHIVE, 67108864, 3);
     test_dir_entry!(iter, "EMPTY.DAT", Attributes::ARCHIVE, 0, 0);
     test_dir_entry!(iter, "README.TXT", Attributes::ARCHIVE, 258, 16387);
