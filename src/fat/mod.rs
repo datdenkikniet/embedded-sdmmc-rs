@@ -5,7 +5,7 @@ use crate::{BlockDevice, BlockIdx};
 use self::{
     bios_param_block::{BiosParameterBlock, BpbError},
     cluster::{Cluster, ClusterSectorIterator},
-    directory::{DirEntry, DirEntryInfo, DirEntryParent, DirIter},
+    directory::{DirEntry, DirEntryInfo, DirEntryParent, DirEntryRaw, DirIter},
     file::{File, OpenMode},
     root_directory::RootDirIter,
 };
@@ -22,8 +22,20 @@ mod test;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PhysicalLocation {
+    /// The sector number in which this entry is stored
     sector: BlockIdx,
+    /// The offset of the data described by this location within
+    /// the sector
     byte_offset: usize,
+}
+
+impl PhysicalLocation {
+    pub const fn zero() -> Self {
+        Self {
+            sector: BlockIdx(0),
+            byte_offset: 0,
+        }
+    }
 }
 
 pub trait SectorIter<BD>
@@ -161,14 +173,10 @@ where
         DirIter::new(self, DirEntryParent::RootDir, iter)
     }
 
-    pub(crate) fn get_entry_location(
-        &mut self,
-        fat_number: u32,
-        entry: &Entry,
-    ) -> PhysicalLocation {
+    pub(crate) fn get_entry_location(&mut self, fat_number: u32, entry: u32) -> PhysicalLocation {
         let fat_offset = match self.fat_type() {
-            FatType::Fat16 => entry.0 * 2,
-            FatType::Fat32 => entry.0 * 4,
+            FatType::Fat16 => entry * 2,
+            FatType::Fat32 => entry * 4,
         };
 
         let sec_num = self.bpb.reserved_sector_count().0
@@ -189,12 +197,10 @@ where
         }
     }
 
-    pub(crate) fn get_fat_entry(
+    pub(crate) fn read_fat_entry(
         &mut self,
-        fat_number: u32,
-        cluster: &Cluster,
-    ) -> Result<(Entry, PhysicalLocation), BD::Error> {
-        let location = self.get_entry_location(fat_number, &Entry(cluster.0));
+        location: PhysicalLocation,
+    ) -> Result<Entry, BD::Error> {
         let PhysicalLocation {
             sector,
             byte_offset: entry_offset,
@@ -217,17 +223,19 @@ where
             }
         };
 
-        Ok((Entry(entry_value), location))
+        Ok(Entry::new_unchecked(entry_value, location))
     }
 
     pub(crate) fn find_next_entry(
         &mut self,
+        fat_number: u32,
         current_entry: &Entry,
     ) -> Result<Option<Entry>, BD::Error> {
         if current_entry.is_final(self.fat_type()) || current_entry.is_free(self.fat_type()) {
             Ok(None)
         } else {
-            Ok(Some(Entry(current_entry.0)))
+            let next_entry_location = self.get_entry_location(fat_number, current_entry.value);
+            self.read_fat_entry(next_entry_location).map(|e| Some(e))
         }
     }
 
@@ -236,8 +244,9 @@ where
         fat_number: u32,
         current_cluster: &Cluster,
     ) -> Result<Option<Cluster>, BD::Error> {
-        let (my_entry, _) = self.get_fat_entry(fat_number, current_cluster)?;
-        Ok(self.find_next_entry(&my_entry)?.map(|e| Cluster(e.0)))
+        let my_entry = current_cluster.entry();
+        let next_entry = self.find_next_entry(fat_number, &my_entry)?;
+        Ok(next_entry.map(|e| Cluster::new(e)))
     }
 
     pub(crate) fn all_sectors(&mut self, cluster: Cluster) -> ClusterSectorIterator {
@@ -266,36 +275,47 @@ where
         self.close_dir_entry(&dir_entry);
 
         let fat_type = self.fat_type();
-        let (mut current_entry, mut location) =
-            self.get_fat_entry(1, dir_entry.info().first_cluster())?;
+        let mut current_entry = dir_entry.info().first_cluster().entry().clone();
 
         loop {
-            let mut block = self.block_device.read_block(location.sector)?;
+            let mut block = self
+                .block_device
+                .read_block(current_entry.location.sector)?;
 
-            let offset = location.byte_offset;
+            let offset = current_entry.location.byte_offset;
             match fat_type {
                 FatType::Fat16 => {
                     block.contents[offset..offset + 2]
-                        .copy_from_slice(&(Entry::FREE.0 as u16).to_le_bytes());
+                        .copy_from_slice(&(Entry::FREE as u16).to_le_bytes());
                 }
                 FatType::Fat32 => {
                     block.contents[offset..offset + 4]
-                        .copy_from_slice(&(Entry::FREE.0 as u32).to_le_bytes());
+                        .copy_from_slice(&(Entry::FREE as u32).to_le_bytes());
                 }
             }
 
-            if !current_entry.is_final(fat_type) {
-                (current_entry, location) =
-                    if let Some(val) = self.find_next_entry(&current_entry)? {
-                        let location = self.get_entry_location(1, &val);
-                        (val, location)
-                    } else {
-                        break;
-                    }
-            } else {
-                break;
-            }
+            self.block_device
+                .write(&[block], current_entry.location.sector)?;
+
+            current_entry =
+                if let Some(val) = self.find_next_entry(dir_entry.fat_number(), &current_entry)? {
+                    val
+                } else {
+                    break;
+                }
         }
+
+        let entry_location = dir_entry.location();
+
+        let mut block = self.block_device.read_block(entry_location.sector)?;
+        extern crate std;
+        std::println!("{:X?}", block);
+        let mut raw = DirEntryRaw::new(
+            &mut block.contents[entry_location.byte_offset..entry_location.byte_offset + 32],
+        );
+        raw.clear_name();
+        std::println!("{:X?}", block);
+        self.block_device.write(&[block], entry_location.sector)?;
         Ok(())
     }
 
@@ -306,27 +326,40 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Entry(u32);
+#[derive(Debug, Clone, Copy)]
+pub struct Entry {
+    value: u32,
+    location: PhysicalLocation,
+}
+
+impl PartialEq<Entry> for Entry {
+    fn eq(&self, other: &Entry) -> bool {
+        self.value == other.value
+    }
+}
 
 impl Entry {
     const ALLOC_MIN: u32 = 2;
 
-    pub const FREE: Self = Self(0);
+    pub const FREE: u32 = 0;
 
-    pub const FAT32_BAD: Self = Self(0xFFFFFF7);
-    pub const FAT32_FINAL: Self = Self(0xFFFFFFFF);
+    pub const FAT32_BAD: u32 = 0xFFFFFF7;
+    pub const FAT32_FINAL: u32 = 0xFFFFFFFF;
     const FAT32_RESERVED_RANGE_START: u32 = 0xFFFFFF8;
     const FAT32_RESERVED_RANGE_END: u32 = 0xFFFFFFE;
 
-    pub const FAT16_BAD: Self = Self(0xFFF7);
-    pub const FAT16_FINAL: Self = Self(0xFFFF);
+    pub const FAT16_BAD: u32 = 0xFFF7;
+    pub const FAT16_FINAL: u32 = 0xFFFF;
     const FAT16_RESERVED_RANGE_START: u32 = 0xFFF8;
     const FAT16_RESERVED_RANGE_END: u32 = 0xFFFE;
 
-    pub fn new(value: u32) -> Option<Self> {
+    const fn new_unchecked(value: u32, location: PhysicalLocation) -> Self {
+        Self { value, location }
+    }
+
+    pub const fn new(value: u32, location: PhysicalLocation) -> Option<Self> {
         if value > Self::ALLOC_MIN {
-            Some(Self(value))
+            Some(Self { value, location })
         } else {
             None
         }
@@ -334,23 +367,27 @@ impl Entry {
 
     pub fn is_free(&self, fat_type: FatType) -> bool {
         match fat_type {
-            FatType::Fat16 => self == &Self::FREE,
-            FatType::Fat32 => Entry(self.0 & 0xFFFFFFF) == Self::FREE,
+            FatType::Fat16 => self.value == Self::FREE,
+            FatType::Fat32 => self.value & 0xFFFFFFF == Self::FREE,
         }
     }
 
     pub fn is_final(&self, fat_type: FatType) -> bool {
         match fat_type {
             FatType::Fat16 => {
-                self == &Self::FAT16_FINAL
-                    || (self.0 >= Self::FAT16_RESERVED_RANGE_START
-                        && self.0 <= Self::FAT16_RESERVED_RANGE_END)
+                self.value == Self::FAT16_FINAL
+                    || (self.value >= Self::FAT16_RESERVED_RANGE_START
+                        && self.value <= Self::FAT16_RESERVED_RANGE_END)
             }
             FatType::Fat32 => {
-                Entry(self.0 & 0xFFFFFFF) == Self::FAT32_FINAL
-                    || (self.0 >= Self::FAT32_RESERVED_RANGE_START
-                        && self.0 <= Self::FAT32_RESERVED_RANGE_END)
+                self.value & 0xFFFFFFF == Self::FAT32_FINAL
+                    || (self.value >= Self::FAT32_RESERVED_RANGE_START
+                        && self.value <= Self::FAT32_RESERVED_RANGE_END)
             }
         }
+    }
+
+    pub fn value(&self) -> u32 {
+        self.value
     }
 }

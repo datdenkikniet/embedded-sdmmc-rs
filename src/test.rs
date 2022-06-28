@@ -1,6 +1,5 @@
 use crate::{
     fat::{
-        cluster::Cluster,
         directory::{Attributes, ShortNameRaw},
         file::OpenMode,
         FatType, FatVolume,
@@ -17,7 +16,7 @@ macro_rules! test_dir_entry {
         assert_eq!(name, Some($name));
         assert_eq!(entry.attributes(), &$attributes);
         assert_eq!(entry.file_size(), $file_size);
-        assert_eq!(entry.first_cluster(), &Cluster($first_cluster));
+        assert_eq!(entry.first_cluster().entry().value(), $first_cluster);
     }};
 }
 
@@ -56,11 +55,16 @@ where
 
     assert!(subdir_iter.next().is_none());
 
-    let mut opened_test_dat = volume.open_file(test, OpenMode::ReadOnly).unwrap();
-    let mut opened_test_dat = opened_test_dat.activate(volume).unwrap();
+    let mut opened_test_dat_file = volume.open_file(test, OpenMode::ReadOnly).unwrap();
+    let mut opened_test_dat = opened_test_dat_file.activate(volume).unwrap();
     let data = &mut [0u8; 4096];
     let bytes = opened_test_dat.read(data).unwrap();
     assert_eq!(bytes, 3500);
+    opened_test_dat.release();
+    opened_test_dat_file.delete(volume).unwrap();
+
+    let iter = test_dir.iter_subdir(volume).unwrap();
+    assert_eq!(iter.count(), 3);
 }
 
 fn test_64mb<BD>(volume: &mut FatVolume<BD>)
@@ -126,8 +130,8 @@ fn read_disk_file() {
     test_dir_entry!(f16_iter, "64MB.DAT", Attributes::ARCHIVE, 67108864, 6);
     assert!(f16_iter.next().is_none());
 
-    test_subdir(&mut fat16_volume);
     test_64mb(&mut fat16_volume);
+    test_subdir(&mut fat16_volume);
 
     let second_partition = mbr.open_partition(PartitionNumber::Two).unwrap();
     let mut fat32_volume = FatVolume::new(second_partition).unwrap();

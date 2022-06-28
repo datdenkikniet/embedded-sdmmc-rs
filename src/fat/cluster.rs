@@ -1,18 +1,22 @@
 use crate::{block_device::BlockIter, BlockCount, BlockDevice, BlockIdx};
 
-use super::{FatVolume, SectorIter};
+use super::{Entry, FatVolume, SectorIter};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Cluster(pub(crate) u32);
+pub struct Cluster(Entry);
 
 impl Cluster {
-    pub fn new(cluster_number: u32) -> Self {
-        Self(cluster_number)
+    pub fn new(entry: Entry) -> Self {
+        Self(entry)
     }
 
     pub fn sectors(&self, data_start: BlockIdx, sectors_per_cluster: BlockCount) -> BlockIter {
-        let start = data_start + (BlockIdx(self.0.saturating_sub(2)) * sectors_per_cluster);
+        let start = data_start + (BlockIdx(self.0.value.saturating_sub(2)) * sectors_per_cluster);
         start.range(sectors_per_cluster)
+    }
+
+    pub fn entry(&self) -> &Entry {
+        &self.0
     }
 }
 

@@ -5,7 +5,7 @@ use crate::{Block, BlockDevice};
 use super::{
     block_byte_cache::BlockByteCache,
     cluster::{Cluster, ClusterSectorIterator},
-    FatType, FatVolume, PhysicalLocation, SectorIter,
+    Entry, FatType, FatVolume, PhysicalLocation, SectorIter,
 };
 
 bitflags::bitflags! {
@@ -185,6 +185,7 @@ where
     BD: BlockDevice,
 {
     parent: DirEntryParent<'parent>,
+    fat_number: u32,
     info: DirEntryInfo,
     _block_device: PhantomData<FatVolume<BD>>,
 }
@@ -193,9 +194,10 @@ impl<'parent, BD> DirEntry<'parent, BD>
 where
     BD: BlockDevice,
 {
-    fn new(parent: DirEntryParent<'parent>, info: DirEntryInfo) -> Self {
+    fn new(parent: DirEntryParent<'parent>, fat_number: u32, info: DirEntryInfo) -> Self {
         Self {
             parent,
+            fat_number,
             info,
             _block_device: Default::default(),
         }
@@ -205,6 +207,7 @@ where
         Self {
             parent: self.parent,
             info: self.info.copy(),
+            fat_number: self.fat_number,
             _block_device: Default::default(),
         }
     }
@@ -255,6 +258,10 @@ where
             Ok(())
         }
     }
+
+    pub fn fat_number(&self) -> u32 {
+        self.fat_number
+    }
 }
 
 impl<BD> core::ops::Deref for DirEntry<'_, BD>
@@ -298,12 +305,16 @@ impl DirEntryInfo {
         }
     }
 
-    fn new(
+    fn new<BD>(
+        volume: &mut FatVolume<BD>,
         #[cfg(feature = "lfn")] long_name: LongNameRaw,
         raw: &DirEntryRaw,
         fat_type: FatType,
         location: PhysicalLocation,
-    ) -> Result<Self, DirEntryError> {
+    ) -> Result<Self, DirEntryError>
+    where
+        BD: BlockDevice,
+    {
         let name = raw.name();
         let attributes = Attributes::from_bits_truncate(raw.attr());
 
@@ -316,16 +327,23 @@ impl DirEntryInfo {
 
         let clus_hi = raw.fst_clus_hi() as u32;
         let clus_lo = raw.fst_clus_lo() as u32;
-        let first_cluster = match fat_type {
+
+        let first_cluster_num = match fat_type {
             FatType::Fat16 => {
                 if clus_hi == 0 {
-                    Cluster(clus_lo)
+                    clus_lo
                 } else {
                     return Err(DirEntryError::Fat16FistClusHiNotZero);
                 }
             }
-            FatType::Fat32 => Cluster(clus_hi << 16 | clus_lo),
+            FatType::Fat32 => clus_hi << 16 | clus_lo,
         };
+
+        let first_cluster_location = volume.get_entry_location(1, first_cluster_num);
+        let first_cluster = Cluster::new(Entry::new_unchecked(
+            first_cluster_num,
+            first_cluster_location,
+        ));
 
         Ok(Self {
             location,
@@ -358,14 +376,18 @@ impl DirEntryInfo {
         &self.first_cluster
     }
 
-    pub(crate) fn get_free_status(&self) -> (bool, bool) {
-        let first_name_char = self.short_name().main_name[0];
-        (self.short_name().is_free(), first_name_char == 0x00)
+    pub fn location(&self) -> &PhysicalLocation {
+        &self.location
     }
 
     #[cfg(feature = "lfn")]
     pub fn long_name(&self) -> &LongNameRaw {
         &self.long_name
+    }
+
+    pub(crate) fn get_free_status(&self) -> (bool, bool) {
+        let first_name_char = self.short_name().main_name[0];
+        (self.short_name().is_free(), first_name_char == 0x00)
     }
 }
 
@@ -377,7 +399,11 @@ pub struct DirEntryRaw<'a> {
 impl<'a> DirEntryRaw<'a> {
     pub const LFN_ENTRY_LEN: usize = (5 + 6 + 2);
 
+    #[inline(always)]
     pub fn new(data: &'a mut [u8]) -> Self {
+        if data.len() != 32 {
+            panic!("Data is of incorrect length.")
+        }
         Self { data }
     }
 
@@ -391,6 +417,10 @@ impl<'a> DirEntryRaw<'a> {
 
     pub fn name(&self) -> [u8; 11] {
         self.data()[0..11].try_into().expect("Infallible")
+    }
+
+    pub fn clear_name(&mut self) {
+        self.data[0] = 0xE5;
     }
 
     pub fn set_name(&mut self, name: &[u8]) {
@@ -569,6 +599,7 @@ where
                     Self::handle_lfn(&raw_dir_entry, &mut long_name_data);
                 } else {
                     let dir_entry = DirEntryInfo::new(
+                        volume,
                         #[cfg(feature = "lfn")]
                         long_name_data.take().unwrap_or(LongNameRaw {
                             long_name_data: [0u16; 256],
@@ -577,7 +608,7 @@ where
                         volume.bpb.fat_type(),
                         PhysicalLocation {
                             sector: current_sector,
-                            byte_offset: (*total_entries_read * 32) % (Block::LEN),
+                            byte_offset: ((*total_entries_read - 1) * 32) % (Block::LEN),
                         },
                     )
                     .ok()?;
@@ -587,7 +618,7 @@ where
                     } else if this_entry_free {
                         continue;
                     } else {
-                        return Some(DirEntry::new(self.directory, dir_entry));
+                        return Some(DirEntry::new(self.directory, 1, dir_entry));
                     }
                 }
             } else {

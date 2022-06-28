@@ -2,7 +2,7 @@ use core::num::{NonZeroU16, NonZeroU32, NonZeroU8};
 
 use crate::{Block, BlockCount, BlockIdx};
 
-use super::{root_directory::RootDirectorySectors, Cluster, FatType};
+use super::{root_directory::RootDirectorySectors, Cluster, Entry, FatType, PhysicalLocation};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FatInfo {
@@ -260,7 +260,10 @@ impl BiosParameterBlock {
         } else {
             let root_cluster = Self::root_cluster_checked(raw.root_clus())?;
             Ok(FatInfo::Fat32(Fat32Info {
-                root_cluster: Cluster(root_cluster),
+                root_cluster: Cluster::new(Entry::new_unchecked(
+                    root_cluster,
+                    PhysicalLocation::zero(),
+                )),
             }))
         }
     }
